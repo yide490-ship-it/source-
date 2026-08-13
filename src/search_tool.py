@@ -24,20 +24,27 @@ UPDATE_MIRRORS = ["https://gh-proxy.com/", "https://ghproxy.net/", "https://ghfa
 
 
 def _load_default_sub():
-    """默认订阅从本地 sub_url.txt 读取（不写进源码，避免公开仓库泄露）"""
-    try:
-        base = sys._MEIPASS if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
-        p = os.path.join(base, "sub_url.txt")
-        with open(p, "r", encoding="utf-8") as f:
-            u = f.read().strip()
-        return u if u.startswith("http") else ""
-    except Exception:
-        return ""
+    """订阅链接：数据目录 sub_url.txt 优先（用户可自放/更新），其次 exe 打包目录（兼容旧版）"""
+    bases = [BASE]
+    if getattr(sys, "frozen", False):
+        bases.append(sys._MEIPASS)
+    else:
+        bases.append(os.path.dirname(os.path.abspath(__file__)))
+    for base in bases:
+        try:
+            p = os.path.join(base, "sub_url.txt")
+            with open(p, "r", encoding="utf-8") as f:
+                u = f.read().strip()
+            if u.startswith("http"):
+                return u
+        except Exception:
+            continue
+    return ""
 
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.60"
+APP_VERSION = "1.0.61"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -896,13 +903,11 @@ class App:
         root.title("搜索聚合 · 圆圆")
         defw = min(1240, root.winfo_screenwidth() - 40)  # DPI 缩放时自动收进屏幕
         defh = min(800, root.winfo_screenheight() - 60)
-        if cfg.get("geometry") and cfg.get("geom_v") == APP_VERSION:
-            try:
-                root.geometry(cfg["geometry"])
-            except Exception:
-                root.geometry("%dx%d" % (defw, defh))
-        else:
+        # 固定默认尺寸 1240x800（不记忆用户拖拽尺寸，避免旧记忆顶掉默认窗口）
+        try:
             root.geometry("%dx%d" % (defw, defh))
+        except Exception:
+            pass
         root.minsize(760, 520)
         self.build()
         self.apply_theme()
@@ -913,7 +918,7 @@ class App:
         self._tray_ready = False
         self._setup_tray()
         root.bind("<Unmap>", self._on_unmap)
-        if self.sub_url and not self.builtin_off and (PROXY == "" or PROXY.startswith("http://127.0.0.1:")):
+        if not self.builtin_off and (PROXY == "" or PROXY.startswith("http://127.0.0.1:")):
             def _auto():
                 def _w():
                     try:
@@ -1700,7 +1705,7 @@ class App:
     def on_close(self):
         stop_builtin_clash()
         cfg = load_json(CONFIG_FILE, {}) or {}
-        cfg["geometry"] = self.root.geometry()
+        cfg["geometry"] = "1240x800"
         cfg["geom_v"] = APP_VERSION
         save_json(CONFIG_FILE, cfg)
         self.root.destroy()

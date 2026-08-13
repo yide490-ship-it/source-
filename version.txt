@@ -1,3 +1,3 @@
-1.0.60
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.60.exe
-v1.0.60修复内置代理启动失败:control API端口(9090)与代理端口一样自动避让冲突,被其他Clash/加速器占用时不再启动失败(Google无结果的根因之一)
+1.0.61
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.61.exe
+订阅链接不再打包进exe(防泄露,首次运行自动用内置节点开箱即用)+窗口固定1240x800+卸载保留收藏历史+构建自动只留最新两版
