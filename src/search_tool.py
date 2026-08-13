@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.58"
+APP_VERSION = "1.0.59"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -374,8 +374,48 @@ def _ddg_page(q, limit):
 
 
 
+def _clash_switch_node():
+    """内置 mihomo 自动切换代理节点：当前节点挂了换下一个（URLTest 组会被钉住，换到可用为止）"""
+    import json
+    try:
+        secret = ""
+        try:
+            with open(os.path.join(CLASH_DIR, "config.yaml"), "r", encoding="utf-8") as f:
+                for ln in f:
+                    m = re.match(r"^\s*secret\s*:\s*(.+)$", ln)
+                    if m:
+                        secret = m.group(1).strip().strip('"\'')
+        except Exception:
+            pass
+        api = "http://127.0.0.1:9090"
+        hdr = {"Authorization": "Bearer " + secret} if secret else {}
+        with urllib.request.urlopen(urllib.request.Request(api + "/proxies", headers=hdr), timeout=3) as r:
+            data = json.loads(r.read().decode("utf-8", "ignore"))
+        ps = data.get("proxies", {})
+        groups = [k for k, v in ps.items()
+                  if v.get("type") in ("Selector", "URLTest") and k != "GLOBAL" and v.get("all")]
+        if not groups:
+            return False
+        g = groups[0]
+        nodes = ps[g].get("all") or []
+        cur = ps[g].get("now") or ""
+        if not nodes:
+            return False
+        nxt = nodes[(nodes.index(cur) + 1) % len(nodes)] if cur in nodes else nodes[0]
+        if nxt == cur:
+            return False
+        req = urllib.request.Request(api + "/proxies/" + urllib.parse.quote(g, safe=""),
+                                     data=json.dumps({"name": nxt}).encode("utf-8"),
+                                     headers=hdr, method="PUT")
+        with urllib.request.urlopen(req, timeout=3):
+            pass
+        return True
+    except Exception:
+        return False
+
+
 def _google_page(q, limit):
-    # Google 网页搜索已全线 JS 渲染（无 JS 拿不到结果），改用 Google News RSS（同为 Google 索引结果，代理/直连双通道 + 重试）
+    # Google 网页搜索已全线 JS 渲染（无 JS 拿不到结果），改用 Google News RSS（同为 Google 索引结果，代理/直连双通道 + 重试 + 节点自动切换）
     import xml.etree.ElementTree as ET
     url = "https://news.google.com/rss/search?q=" + urllib.parse.quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
     d = None
@@ -393,6 +433,16 @@ def _google_page(q, limit):
         if d:
             break
         time.sleep(2)
+    if not d and _clash_switch_node():
+        # 代理+直连都失败 → 换一个节点再试一轮（节点间歇性挂的根治方案）
+        time.sleep(1)
+        for use_proxy in (True, False):
+            if d:
+                break
+            try:
+                d = fetch(url, timeout=8, use_proxy=use_proxy)
+            except Exception:
+                pass
     out = []
     if d:
         root = ET.fromstring(d)
