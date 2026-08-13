@@ -35,7 +35,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.42"
+APP_VERSION = "1.0.43"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -205,7 +205,7 @@ def stop_builtin_clash():
         CLASH_PROC = None
 
 
-def fetch(url, timeout=15, use_proxy=True):
+def fetch(url, timeout=8, use_proxy=True):
     req = urllib.request.Request(url, headers=HDRS)
     if PROXY and use_proxy:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
@@ -248,41 +248,37 @@ def _extract(html_text, patterns):
     return out
 
 
-def _baidu_page(q, limit):
-    d = fetch("https://m.baidu.com/s?word=" + urllib.parse.quote(q), use_proxy=False)
-    out = []
-    for t, u in _extract(d, [r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>']):
-        if "m.baidu.com/s?word=" in u or "baidu.com/s?wd=" in u:
-            continue  # 过滤"相关搜索"推荐位
-        out.append((t, u))
-    return out
-
-
 def _sogou_page(q, limit):
-    # 360 搜索（无验证码，翻页有效，可贡献 20+ 条）
+    # 360 搜索（无验证码，翻页有效，可贡献 50+ 条；翻页并行加速）
+    from concurrent.futures import ThreadPoolExecutor
     out, seen = [], set()
-    for pn in (1, 2, 3, 4):
-        if len(out) >= limit:
-            break
+
+    def grab(pn):
         try:
             d = fetch("https://www.so.com/s?q=%s&pn=%d" % (urllib.parse.quote(q), pn), use_proxy=False)
         except Exception:
-            break
-        got = 0
+            return []
+        res = []
         for t, u in _extract(d, [r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>']):
             if "ai.so.com" in u or "so.com/s?q=" in u:
                 continue  # 过滤 AI 推荐位/站内搜索链接
             t2 = re.sub(r"^\d{2}:\d{2}:\d{2}", "", t).strip()  # 去掉时间戳前缀
-            key = _dedup_key(u)
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append((t2, u))
-            got += 1
-            if len(out) >= limit:
-                break
-        if got == 0:
-            break
+            res.append((t2, u))
+        return res
+
+    ex = ThreadPoolExecutor(max_workers=3)
+    try:
+        for chunk in ex.map(grab, range(1, 7)):  # 6 页
+            for t, u in chunk:
+                if len(out) >= limit:
+                    break
+                key = _dedup_key(u)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((t, u))
+    finally:
+        ex.shutdown(wait=False)
     return out
 
 
@@ -291,12 +287,28 @@ def _ddg_page(q, limit):
         d = fetch("https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote(q), use_proxy=False)
     except Exception:
         d = fetch("https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote(q))  # 直连失败走代理重试
-    return _extract(d, [r'<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>(.*?)</a>'])
+    out = []
+    for m in re.finditer(r'<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
+        link = html.unescape(m.group(1)).strip()
+        if "duckduckgo.com/l/?uddg=" in link:  # DDG 跳转链接还原真实地址
+            link = urllib.parse.unquote(link.split("uddg=")[1].split("&")[0])
+        title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+        if link.startswith("http") and title and len(title) > 2:
+            out.append((title[:90], link))
+    return out
 
 
 def _google_page(q, limit):
-    d = fetch("https://www.google.com/search?q=" + urllib.parse.quote(q) + "&num=%d" % limit)
-    return _extract(d, [r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>'])
+    d = fetch("https://www.google.com/search?q=" + urllib.parse.quote(q) + "&num=%d" % min(limit, 20))
+    out = []
+    for m in re.finditer(r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
+        link = html.unescape(m.group(1)).strip()
+        if link.startswith("/url?q="):
+            link = urllib.parse.unquote(link.split("/url?q=")[1].split("&")[0])
+        title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+        if link.startswith("http") and title and len(title) > 2:
+            out.append((title[:90], link))
+    return out
 
 
 def _dedup_key(url):
@@ -307,57 +319,72 @@ def _dedup_key(url):
 
 
 def bing_search(q, limit=10):
-    """全网网页搜索：360/DDG/百度/Google 先贡献，Bing 最后补齐到满额"""
-    engines = [("360", lambda: _sogou_page(q, limit), max(8, limit // 2)),
-               ("ddg", lambda: _ddg_page(q, limit), max(3, limit // 5)),
-               ("baidu", lambda: _baidu_page(q, limit), 3),
-               ("google", lambda: _google_page(q, limit), 3),
-               ("bing", lambda: bing_page(q, limit), limit)]  # Bing 补满
+    """全网网页搜索：360/DDG/Google 并行贡献，Bing 最后补齐到满额"""
+    from concurrent.futures import ThreadPoolExecutor
+    engines = [("360", _sogou_page, max(8, limit // 2)),
+               ("ddg", _ddg_page, max(3, limit // 5)),
+               ("google", _google_page, max(3, limit // 10)),
+               ("bing", bing_page, limit)]  # Bing 补满
     out, seen = [], set()
-    labels = {"bing": "Bing", "ddg": "DuckDuckGo", "360": "360", "baidu": "百度", "google": "Google"}
-    for name, fn, per in engines:
-        if len(out) >= limit:
-            break
-        got = 0
-        try:
-            for title, url in fn():
-                if got >= per:
-                    break
-                key = _dedup_key(url)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(("[%s] %s" % (labels.get(name, name), title), url))
-                got += 1
-                if len(out) >= limit:
-                    break
-        except Exception:
-            continue
+    labels = {"bing": "Bing", "ddg": "DuckDuckGo", "360": "360", "google": "Google"}
+    ex = ThreadPoolExecutor(max_workers=4)
+    futs = [(name, per, ex.submit(fn, q, limit)) for name, fn, per in engines]
+    try:
+        for name, per, fut in futs:
+            try:
+                got = 0
+                for title, url in fut.result(timeout=30):
+                    if got >= per:
+                        break
+                    key = _dedup_key(url)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append(("[%s] %s" % (labels.get(name, name), title), url))
+                    got += 1
+                    if len(out) >= limit:
+                        break
+            except Exception:
+                continue
+            if len(out) >= limit:
+                break
+    finally:
+        ex.shutdown(wait=False)  # 不等待卡住的引擎线程
     return out if out else [("网页结果获取失败", "")]
 
 
 def bing_page(q, limit):
+    from concurrent.futures import ThreadPoolExecutor
     out = []
-    for first in (1, 11, 21, 31):  # Bing 翻页补足结果
-        if len(out) >= limit:
-            break
+    pages = list(range(1, min(limit, 60) + 1, 10))  # Bing 每页实际约 10 条，步进 10 连续翻页
+
+    def grab(first):
         url = ("https://www.bing.com/search?q=" + urllib.parse.quote(q)
                + "&mkt=zh-CN&count=30&first=%d" % first)
         try:
-            d = fetch(url)
+            d = fetch(url, use_proxy=False)  # 国内直连优先
         except Exception:
-            break
-        got = 0
+            try:
+                d = fetch(url)  # 直连失败走代理
+            except Exception:
+                return []
+        res = []
         for m in re.finditer(r'<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
             link = html.unescape(m.group(1)).strip()
             title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
             if link.startswith("http") and title and "bing.com" not in link:
-                out.append((title[:90], link))
-                got += 1
+                res.append((title[:90], link))
+        return res
+
+    ex = ThreadPoolExecutor(max_workers=3)
+    try:
+        for chunk in ex.map(grab, pages):
+            for t, u in chunk:
                 if len(out) >= limit:
                     break
-        if got == 0:
-            break
+                out.append((t, u))
+    finally:
+        ex.shutdown(wait=False)
     return out
 
 def so_search(q, limit=10):
@@ -510,7 +537,7 @@ def search_one(args):
 
 _CACHE = {}
 CACHE_TTL = 60  # 搜索结果缓存秒数（1 分钟内重复搜索走缓存）
-FETCH_LIMIT = 50  # 每源抓取上限（不限制展示，分页浏览）
+FETCH_LIMIT = 100  # 每源抓取上限（不限制展示，分页浏览）
 PAGE_SIZE = 10  # 每页展示条数
 
 
