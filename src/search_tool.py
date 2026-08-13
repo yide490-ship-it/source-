@@ -19,6 +19,7 @@ CLASH_DIR = os.path.join(DATA_DIR, "clash")
 CLASH_PORT = 7890
 CLASH_PROC = None
 UPDATE_URL = "https://raw.githubusercontent.com/yide490-ship-it/source-/main/version.txt"  # 在线更新源（GitHub 仓库 version.txt）
+UPDATE_MIRRORS = ["https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/"]  # GitHub 加速镜像（国内无代理可达）
 
 
 def _load_default_sub():
@@ -35,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.47"
+APP_VERSION = "1.0.48"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -419,8 +420,11 @@ def bing_page(q, limit):
         try:
             d = fetch(url, use_proxy=False)  # 国内直连优先
         except Exception:
+            d = None
+        # 限流/验证页检测 → 走代理重试
+        if not d or "\u9a8c\u8bc1" in d or "\u5b89\u5168\u9a8c\u8bc1" in d or "challenge" in d.lower() or len(d) < 3000:
             try:
-                d = fetch(url)  # 直连失败走代理
+                d = fetch(url)  # 走代理
             except Exception:
                 return []
         res = []
@@ -721,13 +725,15 @@ class App:
         self.favorites = load_json(FAV_FILE, [])
         self.data = {}
         root.title("搜索聚合 · 圆圆")
+        defw = min(1240, root.winfo_screenwidth() - 40)  # DPI 缩放时自动收进屏幕
+        defh = min(800, root.winfo_screenheight() - 60)
         if cfg.get("geometry") and cfg.get("geom_v") == APP_VERSION:
             try:
                 root.geometry(cfg["geometry"])
             except Exception:
-                pass
+                root.geometry("%dx%d" % (defw, defh))
         else:
-            root.geometry("1240x800")
+            root.geometry("%dx%d" % (defw, defh))
         root.minsize(760, 520)
         self.build()
         self.apply_theme()
@@ -1310,20 +1316,21 @@ class App:
     def _fetch_update_info(self):
         """请求 version.txt：返回 (版本号, 下载链接, 更新说明)；失败返回 (None, "", "")"""
         try:
-            url = UPDATE_URL
-            if not url:
-                return None, "", ""
+            urls = [UPDATE_URL] + [m + UPDATE_URL for m in UPDATE_MIRRORS]
             raw = None
-            req = urllib.request.Request(url, headers=HDRS)
-            for use_proxy in (True, False):
-                try:
-                    h = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}) if (use_proxy and PROXY) else urllib.request.ProxyHandler({})
-                    opener = urllib.request.build_opener(h)
-                    with opener.open(req, timeout=8) as r:
-                        raw = r.read().decode("utf-8", "ignore")
+            for url in urls:
+                req = urllib.request.Request(url, headers=HDRS)
+                for use_proxy in (True, False):
+                    try:
+                        h = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}) if (use_proxy and PROXY) else urllib.request.ProxyHandler({})
+                        opener = urllib.request.build_opener(h)
+                        with opener.open(req, timeout=8) as r:
+                            raw = r.read().decode("utf-8", "ignore")
+                        break
+                    except Exception:
+                        continue
+                if raw:
                     break
-                except Exception:
-                    continue
             if not raw:
                 return None, "", ""
             lines = [l.strip() for l in raw.splitlines() if l.strip()]
@@ -1332,6 +1339,13 @@ class App:
             return lines[0], (lines[1] if len(lines) > 1 else ""), (lines[2] if len(lines) > 2 else "")
         except Exception:
             return None, "", ""
+
+    @staticmethod
+    def _mirror_url(dl):
+        """GitHub raw 下载链接转加速镜像（国内无代理可下）"""
+        if not dl or "raw.githubusercontent.com" not in dl:
+            return dl
+        return UPDATE_MIRRORS[0] + dl
 
     @staticmethod
     def _autostart_enabled():
@@ -1575,38 +1589,55 @@ class App:
         return tuple(int(p) for p in parts) or (0, 0, 0)
 
     def _prompt_update(self, ver, dl, note=""):
-        """发现新版本弹窗（软件内）"""
+        """发现新版本弹窗（软件内，自适应可缩放 + 更新说明可滚动）"""
         try:
             t = THEMES["dark" if self.dark else "light"]
             win = tk.Toplevel(self.root)
             win.title("发现新版本")
             win.configure(bg=t["bg"])
             win.transient(self.root)
-            w, h = 420, 230
-            x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
-            y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
-            win.geometry("%dx%d+%d+%d" % (w, h, x, y))
-            win.resizable(False, False)
-            tk.Label(win, text="◆ 发现新版本 v%s" % ver, font=("Microsoft YaHei UI", 14, "bold"),
-                     fg=t["accent"], bg=t["bg"]).pack(pady=(18, 4))
+            win.resizable(True, True)
+            win.minsize(400, 240)
+            tk.Label(win, text="\u25c6 发现新版本 v%s" % ver, font=("Microsoft YaHei UI", 14, "bold"),
+                     fg=t["accent"], bg=t["bg"]).pack(pady=(14, 2))
             tk.Label(win, text="当前版本 v%s" % APP_VERSION, font=("Microsoft YaHei UI", 10),
                      fg=t["sub"], bg=t["bg"]).pack()
+            body = tk.Frame(win, bg=t["bg"])
+            body.pack(fill="both", expand=True, padx=14, pady=(8, 0))
+            body.rowconfigure(0, weight=1)
+            body.columnconfigure(0, weight=1)
             if note:
-                tk.Label(win, text=note, font=("Microsoft YaHei UI", 10),
-                         fg=t["fg"], bg=t["bg"], wraplength=370, justify="left").pack(pady=(8, 0))
+                h_est = min(12, max(3, len(note) // 38 + 1))  # 按字数估算行数
+                txtw = tk.Text(body, wrap="word", relief="flat", borderwidth=0,
+                               highlightthickness=0, font=("Microsoft YaHei UI", 10),
+                               fg=t["fg"], bg=t["tab"], padx=10, pady=8, spacing1=3, spacing3=3,
+                               selectbackground=t["tab"], height=h_est, cursor="arrow")
+                txtw.grid(row=0, column=0, sticky="nsew")
+                sb = tk.Scrollbar(body, command=txtw.yview)
+                sb.grid(row=0, column=1, sticky="ns")
+                txtw.config(yscrollcommand=sb.set)
+                txtw.insert("1.0", note)
+                txtw.config(state="disabled")
             row = tk.Frame(win, bg=t["bg"])
-            row.pack(pady=(16, 10))
+            row.pack(pady=(10, 12))
             tk.Button(row, text="立即更新", font=("Microsoft YaHei UI", 10, "bold"),
                       fg="white", bg=t["accent"], activebackground=t["accent"],
                       bd=0, padx=18, pady=4, cursor="hand2",
-                      command=lambda: (webbrowser.open(dl) if dl else None, win.destroy())).pack(side="left", padx=8)
+                      command=lambda: (webbrowser.open(self._mirror_url(dl)) if dl else None, win.destroy())).pack(side="left", padx=8)
             tk.Button(row, text="稍后更新", font=("Microsoft YaHei UI", 10),
                       fg=t["fg"], bg=t["tab"], activebackground=t["tab"],
                       bd=0, padx=14, pady=4, cursor="hand2",
                       command=win.destroy).pack(side="left", padx=8)
+            win.update_idletasks()
+            w = min(max(420, win.winfo_reqwidth() + 30), win.winfo_screenwidth() - 60)
+            h = min(win.winfo_reqheight() + 16, win.winfo_screenheight() - 80)
+            x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+            y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+            win.geometry("%dx%d+%d+%d" % (w, h, x, y))
         except Exception:
             pass
 
+    
     def _open_loading(self, q):
         """搜索中提示：只在软件窗口内显示（各标签页中央），不弹独立窗口"""
         for lbl in self.loading_lbls.values():
