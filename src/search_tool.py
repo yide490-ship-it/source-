@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.53"
+APP_VERSION = "1.0.54"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -266,29 +266,29 @@ def _extract(html_text, patterns):
 
 
 def _sogou_page(q, limit):
-    """360 搜索：PC 版 www.so.com 翻页(无验证码，50+ 条)；空页/风控自动降级 m.so.com 移动版(稳定 12 条兜底)"""
+    """360 \u641c\u7d22\uff1aPC \u7248 www.so.com \u7ffb\u9875\uff1b\u7a7a\u9875/\u9a8c\u8bc1\u98ce\u63a7\u81ea\u52a8\u964d\u7ea7 m.so.com \u79fb\u52a8\u7248\uff0c\u518d\u964d\u7ea7 news.so.com \u65b0\u95fb\u641c\u7d22\uff08IP \u98ce\u63a7\u65f6\u4ecd\u53ef\u7528\uff09"""
     from concurrent.futures import ThreadPoolExecutor
     out, seen = [], set()
 
     def grab(pn):
         url = "https://www.so.com/s?q=%s&pn=%d" % (urllib.parse.quote(q), pn)
         try:
-            d = fetch(url, use_proxy=False)  # 国内直连优先
+            d = fetch(url, use_proxy=False)  # \u56fd\u5185\u76f4\u8fde\u4f18\u5148
         except Exception:
             return []
-        if not d or "验证" in d or "异常" in d or len(d) < 4000:
-            return []  # 风控页/空结果页 → 交给降级路径
+        if not d or "\u9a8c\u8bc1" in d or "\u5f02\u5e38" in d or len(d) < 4000:
+            return []  # \u98ce\u63a7\u9875/\u7a7a\u7ed3\u679c\u9875 \u2192 \u4ea4\u7ed9\u964d\u7ea7\u8def\u5f84
         res = []
         for t, u in _extract(d, [r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>']):
             if "ai.so.com" in u or "so.com/s?q=" in u:
-                continue  # 过滤 AI 推荐位/站内搜索链接
-            t2 = re.sub(r"^\d{2}:\d{2}:\d{2}", "", t).strip()  # 去掉时间戳前缀
+                continue  # \u8fc7\u6ee4 AI \u63a8\u8350\u4f4d/\u7ad9\u5185\u641c\u7d22\u94fe\u63a5
+            t2 = re.sub(r"^\d{2}:\d{2}:\d{2}", "", t).strip()  # \u53bb\u6389\u65f6\u95f4\u6233\u524d\u7f00
             res.append((t2, u))
         return res
 
     ex = ThreadPoolExecutor(max_workers=3)
     try:
-        for chunk in ex.map(grab, range(1, 7)):  # PC 版 6 页并行
+        for chunk in ex.map(grab, range(1, 7)):  # PC \u7248 6 \u9875\u5e76\u884c
             for t, u in chunk:
                 if len(out) >= limit:
                     break
@@ -301,16 +301,38 @@ def _sogou_page(q, limit):
         ex.shutdown(wait=False)
     if out:
         return out
-    # 降级：m.so.com 移动版（稳定 12 条；翻页参数无效，仅取第一页）
+    # \u964d\u7ea71\uff1am.so.com \u79fb\u52a8\u7248\uff08\u7a33\u5b9a 12 \u6761\uff1b\u7ffb\u9875\u53c2\u6570\u65e0\u6548\uff0c\u4ec5\u53d6\u7b2c\u4e00\u9875\uff09
     try:
         d = fetch("https://m.so.com/s?q=%s" % urllib.parse.quote(q), use_proxy=False)
-        for m in re.finditer(r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
-            u = html.unescape(m.group(1)).strip()
-            if "jump?u=" in u:  # 移动版跳转链接还原真实地址
-                u = urllib.parse.unquote(u.split("jump?u=")[1].split("&")[0])
-            t = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
-            t = re.sub(r"^(文章浏览阅读[\d.]+w?次\s*点赞\d+次\.?\s*|简介：)", "", t).strip()
-            if u.startswith("http") and t and "#close" not in u and "m.so.com/s?" not in u:
+        if d and "\u9a8c\u8bc1" not in d:  # \u9a8c\u8bc1\u7801\u9875(IP\u98ce\u63a7) \u76f4\u63a5\u8df3\u8fc7
+            for m in re.finditer(r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
+                u = html.unescape(m.group(1)).strip()
+                if "jump?u=" in u:  # \u79fb\u52a8\u7248\u8df3\u8f6c\u94fe\u63a5\u8fd8\u539f\u771f\u5b9e\u5730\u5740
+                    u = urllib.parse.unquote(u.split("jump?u=")[1].split("&")[0])
+                t = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+                t = re.sub(r"^(\u6587\u7ae0\u6d4f\u89c8\u9605\u8bfb[\d.]+w?\u6b21\s*\u70b9\u8d5e\u6570\u6b21\s*|\u7b80\u4ecb\uff1a)", "", t).strip()
+                if u.startswith("http") and t and "#close" not in u and "m.so.com/s?" not in u:
+                    key = _dedup_key(u)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    out.append((t[:90], u))
+                    if len(out) >= limit:
+                        break
+    except Exception:
+        pass
+    if out:
+        return out
+    # \u964d\u7ea72\uff1anews.so.com \u65b0\u95fb\u641c\u7d22\uff08IP \u9a8c\u8bc1\u98ce\u63a7\u65f6\u4ecd\u53ef\u7528\uff0c\u771f\u5b9e\u94fe\u63a5\uff09
+    try:
+        d = fetch("https://news.so.com/ns?q=%s" % urllib.parse.quote(q), use_proxy=False)
+        for blk in re.findall(r'<li class="full-txt.*?</li>', d, re.S):
+            mh = re.search(r'<a[^>]*href="(https?://[^"]+)"[^>]*title="([^"]*)"', blk)
+            if not mh:
+                continue
+            u = html.unescape(mh.group(1)).strip()
+            t = html.unescape(mh.group(2)).strip()
+            if u.startswith("http") and t and len(t) > 2 and "so.com" not in u:
                 key = _dedup_key(u)
                 if key in seen:
                     continue
@@ -446,7 +468,19 @@ def bing_search(q, limit=10):
 def bing_page(q, limit):
     from concurrent.futures import ThreadPoolExecutor
     out = []
-    pages = list(range(1, min(limit, 60) + 1, 10))  # Bing 每页实际约 10 条，步进 10 连续翻页
+    pages = list(range(1, min(limit, 60) + 1, 10))  # Bing \u6bcf\u9875\u5b9e\u9645\u7ea6 10 \u6761\uff0c\u6b65\u8fdb 10 \u8fde\u7eed\u7ffb\u9875
+
+    def _fb(url, use_proxy):
+        # Bing \u5e26 Cookie \u8bf7\u6c42\uff08\u65e0 cookie \u8fde\u7eed\u8bf7\u6c42\u6613\u89e6\u53d1\u9650\u6d41\uff09
+        hdr = dict(HDRS)
+        hdr["Cookie"] = "SRCHHPGUSR=SRCHLANG=zh-Hans; _EDGE_S=mkt=zh-cn; MUID=0A1B2C3D4E5F60718293A4B5C6D7E8F9"
+        req = urllib.request.Request(url, headers=hdr)
+        if PROXY and use_proxy:
+            op = urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
+            with op.open(req, timeout=8) as r:
+                return r.read().decode("utf-8", "ignore")
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return r.read().decode("utf-8", "ignore")
 
     def grab(first):
         url = ("https://www.bing.com/search?q=" + urllib.parse.quote(q)
@@ -463,24 +497,25 @@ def bing_page(q, limit):
                     res.append((title[:90], link))
             return res
 
-        # 代理优先（GUI 内置代理稳定出结果；CLI 无代理时自动回落直连）
+        # \u4ee3\u7406\u4f18\u5148\uff08GUI \u5185\u7f6e\u4ee3\u7406\u7a33\u5b9a\u51fa\u7ed3\u679c\uff1bCLI \u65e0\u4ee3\u7406\u65f6\u81ea\u52a8\u56de\u843d\u76f4\u8fde\uff09
         res = []
         try:
-            res = parse(fetch(url))
+            res = parse(_fb(url, True))
         except Exception:
             res = []
-        if not res:  # 限流/空结果 → 冷却后代理重试一次（Bing 无 cookie 连续请求易被临时限流）
+        if not res:  # \u9650\u6d41/\u7a7a\u7ed3\u679c \u2192 \u51b7\u5374\u540e\u91cd\u8bd5\u4e00\u6b21
             try:
                 time.sleep(1.5)
-                res = parse(fetch(url))
+                res = parse(_fb(url, True))
             except Exception:
                 res = []
-        if not res:  # 直连兜底
+        if not res:  # \u76f4\u8fde\u515c\u5e95
             try:
-                res = parse(fetch(url, use_proxy=False))
+                res = parse(_fb(url, False))
             except Exception:
                 res = []
         return res
+
     ex = ThreadPoolExecutor(max_workers=3)
     try:
         for chunk in ex.map(grab, pages):
@@ -491,6 +526,8 @@ def bing_page(q, limit):
     finally:
         ex.shutdown(wait=False)
     return out
+
+
 
 def so_search(q, limit=10):
     # 中文关键词先翻译成英文再搜（Stack Overflow 是英文站）；每页 100 条翻页并行
