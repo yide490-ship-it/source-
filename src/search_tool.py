@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.51"
+APP_VERSION = "1.0.52"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -545,7 +545,7 @@ def npm_search(q, limit=10):
 
     ex = ThreadPoolExecutor(max_workers=3)
     try:
-        for data in ex.map(grab, range(0, min(limit, 300), 100)):
+        for data in ex.map(grab, range(0, min(limit, 1000), 100)):
             if not data:
                 break
             objs = data.get("objects", [])
@@ -686,7 +686,7 @@ def search_one(args):
 
 _CACHE = {}
 CACHE_TTL = 60  # 搜索结果缓存秒数（1 分钟内重复搜索走缓存）
-FETCH_LIMIT = 300  # 每源抓取上限（API 硬顶内尽力多抓：GitHub/SO 翻3页、npm 250、网页多引擎累加）
+FETCH_LIMIT = 1000  # 每源抓取上限（API 硬顶内尽力多抓：GitHub/SO 翻3页、npm 250、网页多引擎累加）
 PAGE_SIZE = 10  # 每页展示条数(初始值)
 
 
