@@ -19,7 +19,7 @@ CLASH_DIR = os.path.join(DATA_DIR, "clash")
 CLASH_PORT = 7890
 CLASH_PROC = None
 UPDATE_URL = "https://raw.githubusercontent.com/yide490-ship-it/source-/main/version.txt"  # 在线更新源（GitHub 仓库 version.txt）
-UPDATE_MIRRORS = ["https://ghfast.top/", "https://gh-proxy.com/", "https://ghproxy.net/"]  # GitHub 加速镜像（国内无代理可达）
+UPDATE_MIRRORS = ["https://gh-proxy.com/", "https://ghproxy.net/", "https://ghfast.top/"]  # GitHub 加速镜像（国内无代理可达；按实测速度/稳定性排序）
 
 
 def _load_default_sub():
@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.57"
+APP_VERSION = "1.0.58"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -1819,12 +1819,15 @@ class App:
                     return
                 try:
                     handlers = []
-                    if PROXY:
+                    # 关键：镜像必须直连（国内可达），不能走代理——内置 mihomo 的海外节点访问国内镜像会超时/失败；
+                    # 只有 raw 原地址（github.com/raw.githubusercontent.com）才需要代理
+                    is_mirror = any(url.startswith(m) for m in UPDATE_MIRRORS)
+                    if PROXY and not is_mirror:
                         ph = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY})
                         handlers.append(ph)
                     op = urllib.request.build_opener(*handlers)
                     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                    with op.open(req, timeout=60) as resp, open(dest, "wb") as f:
+                    with op.open(req, timeout=90) as resp, open(dest, "wb") as f:
                         total = int(resp.headers.get("Content-Length") or 0)
                         flag["total"] = total / 1048576.0
                         got = 0

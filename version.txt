@@ -1,3 +1,3 @@
-1.0.57
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.57.exe
-修复两个问题:①Google News RSS 代理失败自动直连兜底+重试(内置代理节点偶发不可达导致Google无结果)②更新下载URL中文文件名percent-encode修复(无代理电脑检测到新版但无法下载的问题)
+1.0.58
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.58.exe
+v1.0.58修复下载:更新下载镜像不再走内置代理(镜像国内直连最快,代理海外节点访问国内镜像反而超时失败)+镜像顺序优化(gh-proxy.com优先)
