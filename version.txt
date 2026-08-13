@@ -1,3 +1,3 @@
-1.0.52
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.52.exe
-结果上限从300条提升到1000条(每源抓取上限FETCH_LIMIT 300→1000,npm翻页同步到1000)
+1.0.53
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.53.exe
+结果上限改为无上限(FETCH_LIMIT 1000→10亿,软件不再限制条数;GitHub/SO/Bing/npm等按各自接口上限抓满)
