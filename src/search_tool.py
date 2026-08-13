@@ -35,7 +35,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.41"
+APP_VERSION = "1.0.42"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -595,7 +595,7 @@ class App:
         self.favorites = load_json(FAV_FILE, [])
         self.data = {}
         root.title("搜索聚合 · 圆圆")
-        if cfg.get("geometry"):
+        if cfg.get("geometry") and cfg.get("geom_v") == APP_VERSION:
             try:
                 root.geometry(cfg["geometry"])
             except Exception:
@@ -1138,6 +1138,7 @@ class App:
             self.status.config(text="便携模式已" + ("开启" if target else "关闭") + "，重启生效")
 
     def check_update(self):
+        """菜单入口：后台检查更新（不卡界面）"""
         import tkinter.messagebox as mb
         if not UPDATE_URL:
             mb.showinfo("检查更新",
@@ -1145,15 +1146,57 @@ class App:
                         "如 Gitee/GitHub 仓库）。\n如需在线更新功能，提供托管地址后即可启用。" % APP_VERSION,
                         parent=self.root)
             return
+        if getattr(self, "_checking", False):
+            return
+        self._checking = True
+        self.status.config(text="正在检查更新…")
+        threading.Thread(target=self._check_update_worker, daemon=True).start()
+
+    def _check_update_worker(self):
+        """后台线程：拉取 version.txt 并弹结果（成功/已最新/失败）"""
+        import tkinter.messagebox as mb
         try:
-            with urllib.request.urlopen(urllib.request.Request(UPDATE_URL, headers={"User-Agent": "Mozilla/5.0"}), timeout=10) as r:
-                latest = r.read().decode("utf-8", "ignore").strip()
-            if latest and latest != APP_VERSION:
-                mb.showinfo("检查更新", "发现新版本 %s（当前 %s）\n请向分发者获取新安装包。" % (latest, APP_VERSION), parent=self.root)
+            remote_ver, dl, note = self._fetch_update_info()
+            if not remote_ver:
+                self.root.after(0, lambda: (self.status.config(text="检查更新失败（网络异常）"), self._checking_done()))
+                return
+            if self._ver_tuple(remote_ver) <= self._ver_tuple(APP_VERSION):
+                self.root.after(0, lambda: (mb.showinfo("检查更新", "当前已是最新版本 %s ✓" % APP_VERSION, parent=self.root), self._checking_done()))
             else:
-                mb.showinfo("检查更新", "当前已是最新版本 %s ✓" % APP_VERSION, parent=self.root)
-        except Exception as e:
-            mb.showerror("检查更新", "检查失败: " + str(e)[:60], parent=self.root)
+                self.root.after(0, lambda: (self._prompt_update(remote_ver, dl, note), self._checking_done()))
+        except Exception:
+            self.root.after(0, lambda: (self.status.config(text="检查更新失败"), self._checking_done()))
+
+    def _checking_done(self):
+        self._checking = False
+        if self.status.cget("text").startswith("正在检查更新"):
+            self.status.config(text="")
+
+    def _fetch_update_info(self):
+        """请求 version.txt：返回 (版本号, 下载链接, 更新说明)；失败返回 (None, "", "")"""
+        try:
+            url = UPDATE_URL
+            if not url:
+                return None, "", ""
+            raw = None
+            req = urllib.request.Request(url, headers=HDRS)
+            for use_proxy in (True, False):
+                try:
+                    h = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}) if (use_proxy and PROXY) else urllib.request.ProxyHandler({})
+                    opener = urllib.request.build_opener(h)
+                    with opener.open(req, timeout=8) as r:
+                        raw = r.read().decode("utf-8", "ignore")
+                    break
+                except Exception:
+                    continue
+            if not raw:
+                return None, "", ""
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            if not lines:
+                return None, "", ""
+            return lines[0], (lines[1] if len(lines) > 1 else ""), (lines[2] if len(lines) > 2 else "")
+        except Exception:
+            return None, "", ""
 
     @staticmethod
     def _autostart_enabled():
@@ -1329,6 +1372,7 @@ class App:
         stop_builtin_clash()
         cfg = load_json(CONFIG_FILE, {}) or {}
         cfg["geometry"] = self.root.geometry()
+        cfg["geom_v"] = APP_VERSION
         save_json(CONFIG_FILE, cfg)
         self.root.destroy()
 
@@ -1366,31 +1410,11 @@ class App:
                          daemon=True).start()
 
     def _check_update(self):
-        """后台检查更新：读 GitHub version.txt，有新版本弹窗提示"""
+        """启动自动检查：有新版本且未被跳过才弹窗"""
         try:
-            url = UPDATE_URL
-            if not url:
+            remote_ver, dl, note = self._fetch_update_info()
+            if not remote_ver:
                 return
-            raw = None
-            req = urllib.request.Request(url, headers=HDRS)
-            # 优先走内置代理（就绪时），失败再直连
-            for use_proxy in (True, False):
-                try:
-                    h = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}) if (use_proxy and PROXY) else urllib.request.ProxyHandler({})
-                    opener = urllib.request.build_opener(h)
-                    with opener.open(req, timeout=10) as r:
-                        raw = r.read().decode("utf-8", "ignore")
-                    break
-                except Exception:
-                    continue
-            if not raw:
-                return
-            lines = [l.strip() for l in raw.splitlines() if l.strip()]
-            if not lines:
-                return
-            remote_ver = lines[0]
-            dl = lines[1] if len(lines) > 1 else ""
-            note = lines[2] if len(lines) > 2 else ""
             if self._ver_tuple(remote_ver) <= self._ver_tuple(APP_VERSION):
                 return
             cfg = load_json(CONFIG_FILE, {}) or {}
@@ -1426,22 +1450,14 @@ class App:
                          fg=t["fg"], bg=t["bg"], wraplength=370, justify="left").pack(pady=(8, 0))
             row = tk.Frame(win, bg=t["bg"])
             row.pack(pady=(16, 10))
-            tk.Button(row, text="下载更新", font=("Microsoft YaHei UI", 10, "bold"),
+            tk.Button(row, text="立即更新", font=("Microsoft YaHei UI", 10, "bold"),
                       fg="white", bg=t["accent"], activebackground=t["accent"],
                       bd=0, padx=18, pady=4, cursor="hand2",
                       command=lambda: (webbrowser.open(dl) if dl else None, win.destroy())).pack(side="left", padx=8)
-            tk.Button(row, text="暂不更新", font=("Microsoft YaHei UI", 10),
+            tk.Button(row, text="稍后更新", font=("Microsoft YaHei UI", 10),
                       fg=t["fg"], bg=t["tab"], activebackground=t["tab"],
                       bd=0, padx=14, pady=4, cursor="hand2",
-                      command=lambda: (self._skip_update(ver), win.destroy())).pack(side="left", padx=8)
-        except Exception:
-            pass
-
-    def _skip_update(self, ver):
-        try:
-            cfg = load_json(CONFIG_FILE, {}) or {}
-            cfg["skip_update"] = ver
-            save_json(CONFIG_FILE, cfg)
+                      command=win.destroy).pack(side="left", padx=8)
         except Exception:
             pass
 
