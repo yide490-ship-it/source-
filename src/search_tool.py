@@ -17,6 +17,7 @@ LOG_FILE = os.path.join(DATA_DIR, "error.log")
 PROXY = ""  # HTTP 代理，如 "http://192.168.1.5:7897"；留空 = 直连
 CLASH_DIR = os.path.join(DATA_DIR, "clash")
 CLASH_PORT = 7890
+CLASH_API_PORT = 9090  # 内置内核 control API 端口（启动时自动避让冲突）
 CLASH_PROC = None
 UPDATE_URL = "https://raw.githubusercontent.com/yide490-ship-it/source-/main/version.txt"  # 在线更新源（GitHub 仓库 version.txt）
 UPDATE_MIRRORS = ["https://gh-proxy.com/", "https://ghproxy.net/", "https://ghfast.top/"]  # GitHub 加速镜像（国内无代理可达；按实测速度/稳定性排序）
@@ -36,7 +37,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.59"
+APP_VERSION = "1.0.60"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -104,8 +105,8 @@ def start_builtin_clash(sub_url):
 
 
 def clash_api(path, method="GET", body=None):
-    """调内置 Clash 内核的 control API（127.0.0.1:9090）"""
-    req = urllib.request.Request("http://127.0.0.1:9090" + path, method=method)
+    """调内置 Clash 内核的 control API（端口动态，与启动时一致）"""
+    req = urllib.request.Request("http://127.0.0.1:%d" % CLASH_API_PORT + path, method=method)
     req.add_header("User-Agent", "yuanyuan-search")
     if body is not None:
         req.add_header("Content-Type", "application/json")
@@ -130,7 +131,7 @@ def _builtin_sub():
 
 def _start_builtin_clash_impl(sub_url):
     """用机场订阅启动内置 Clash 内核，成功返回 True（端口自动避让冲突）"""
-    global CLASH_PROC, CLASH_PORT
+    global CLASH_PROC, CLASH_PORT, CLASH_API_PORT
     exe = clash_exe_path()
     if not os.path.exists(exe):
         raise RuntimeError("内置内核缺失: " + exe)
@@ -165,10 +166,12 @@ def _start_builtin_clash_impl(sub_url):
     # 2. 选空闲端口并注入配置（先剔除订阅里已有的同名顶层键，避免重复键启动失败）
     port = _free_port(CLASH_PORT)
     CLASH_PORT = port
+    api_port = _free_port(CLASH_API_PORT)  # control API 端口同样避让，避免被其它 Clash/软件占用导致内置代理启动失败
+    CLASH_API_PORT = api_port
     keep = [ln for ln in raw.split("\n")
             if not re.match(r"^\s*(mixed-port|allow-lan|mode|log-level|external-controller)\s*:", ln)]
     cfg = ("mixed-port: %d\nallow-lan: false\nmode: rule\nlog-level: silent\n"
-           "external-controller: 127.0.0.1:9090\n" % port) + "\n".join(keep)
+           "external-controller: 127.0.0.1:%d\n" % (port, api_port)) + "\n".join(keep)
     cfg_path = os.path.join(CLASH_DIR, "config.yaml")
     with open(cfg_path, "w", encoding="utf-8") as f:
         f.write(cfg)
@@ -387,7 +390,7 @@ def _clash_switch_node():
                         secret = m.group(1).strip().strip('"\'')
         except Exception:
             pass
-        api = "http://127.0.0.1:9090"
+        api = "http://127.0.0.1:%d" % CLASH_API_PORT
         hdr = {"Authorization": "Bearer " + secret} if secret else {}
         with urllib.request.urlopen(urllib.request.Request(api + "/proxies", headers=hdr), timeout=3) as r:
             data = json.loads(r.read().decode("utf-8", "ignore"))
