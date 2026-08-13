@@ -1,3 +1,3 @@
-1.0.56
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.56.exe
-修复Bing结果被淹没:①Bing结果置顶显示(用户第一眼看到[Bing])②限制Google/DDG条数(Google≤15 DDG≤10 360≤15),四源均衡显示
+1.0.57
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.57.exe
+修复两个问题:①Google News RSS 代理失败自动直连兜底+重试(内置代理节点偶发不可达导致Google无结果)②更新下载URL中文文件名percent-encode修复(无代理电脑检测到新版但无法下载的问题)

@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.56"
+APP_VERSION = "1.0.57"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -375,18 +375,34 @@ def _ddg_page(q, limit):
 
 
 def _google_page(q, limit):
-    # Google 网页搜索已全线 JS 渲染（无 JS 拿不到结果），改用 Google News RSS（同为 Google 索引结果，走内置代理稳定可用）
+    # Google 网页搜索已全线 JS 渲染（无 JS 拿不到结果），改用 Google News RSS（同为 Google 索引结果，代理/直连双通道 + 重试）
     import xml.etree.ElementTree as ET
-    d = fetch("https://news.google.com/rss/search?q=" + urllib.parse.quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans")
-    out = []
-    root = ET.fromstring(d)
-    for it in root.iter("item"):
-        t = html.unescape((it.findtext("title") or "").strip())
-        u = (it.findtext("link") or "").strip()
-        if t and u.startswith("http"):
-            out.append((t[:90], u))
-        if len(out) >= limit:
+    url = "https://news.google.com/rss/search?q=" + urllib.parse.quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+    d = None
+    for _ in range(2):  # 代理失败 → 直连兜底 → 间隔重试（内置代理节点偶发不可达，直连常可用）
+        if not d:
+            try:
+                d = fetch(url, timeout=8)
+            except Exception:
+                pass
+        if not d:
+            try:
+                d = fetch(url, timeout=8, use_proxy=False)
+            except Exception:
+                pass
+        if d:
             break
+        time.sleep(2)
+    out = []
+    if d:
+        root = ET.fromstring(d)
+        for it in root.iter("item"):
+            t = html.unescape((it.findtext("title") or "").strip())
+            u = (it.findtext("link") or "").strip()
+            if t and u.startswith("http"):
+                out.append((t[:90], u))
+            if len(out) >= limit:
+                break
     return out
 
 
@@ -1792,7 +1808,9 @@ class App:
         d.geometry("%dx%d+%d+%d" % (w, h, max(x, 0), max(y, 0)))
 
         dest = os.path.join(tempfile.gettempdir(), "yy-update-%s.exe" % ver_slug(dl))
-        urls = [m + dl for m in UPDATE_MIRRORS] + [dl]  # 镜像优先，raw 原地址兜底（内置代理可用）
+        # 关键：安装包文件名含中文（圆圆搜索-…），URL 必须 percent-encode，否则 urllib 报 ascii codec 错误 → 下载永远失败
+        dl_enc = urllib.parse.quote(dl, safe=":/?&=%")
+        urls = [m + dl_enc for m in UPDATE_MIRRORS] + [dl_enc]  # 镜像优先（国内无代理可下），raw 原地址兜底（走内置代理/直连）
         flag = {"run": True, "pct": 0, "mb": 0.0, "total": 0.0, "err": "", "done": False, "cancelled": False}
 
         def worker():
