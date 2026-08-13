@@ -35,7 +35,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.44"
+APP_VERSION = "1.0.45"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -221,7 +221,7 @@ GH_MIRROR = "https://gh-proxy.net/"
 def github_search(q, limit=10):
     # 每页 100 条翻页并行抓取（未认证 API 限流 10 req/min，上限 5 页）
     from concurrent.futures import ThreadPoolExecutor
-    api = "https://api.github.com/search/repositories?q=" + urllib.parse.quote(q) + "&per_page=100"
+    api = "https://api.github.com/search/repositories?q=" + urllib.parse.quote(q) + "&per_page=100&sort=stars&order=desc"  # 按访问量(star)降序
     pages = range(1, min((limit + 99) // 100, 5) + 1)
     items = []
 
@@ -315,15 +315,18 @@ def _ddg_page(q, limit):
 
 
 def _google_page(q, limit):
-    d = fetch("https://www.google.com/search?q=" + urllib.parse.quote(q) + "&num=%d" % min(limit, 20))
+    # Google 网页搜索已全线 JS 渲染（无 JS 拿不到结果），改用 Google News RSS（同为 Google 索引结果，走内置代理稳定可用）
+    import xml.etree.ElementTree as ET
+    d = fetch("https://news.google.com/rss/search?q=" + urllib.parse.quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans")
     out = []
-    for m in re.finditer(r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
-        link = html.unescape(m.group(1)).strip()
-        if link.startswith("/url?q="):
-            link = urllib.parse.unquote(link.split("/url?q=")[1].split("&")[0])
-        title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
-        if link.startswith("http") and title and len(title) > 2:
-            out.append((title[:90], link))
+    root = ET.fromstring(d)
+    for it in root.iter("item"):
+        t = html.unescape((it.findtext("title") or "").strip())
+        u = (it.findtext("link") or "").strip()
+        if t and u.startswith("http"):
+            out.append((t[:90], u))
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -408,7 +411,7 @@ def so_search(q, limit=10):
     from concurrent.futures import ThreadPoolExecutor
     sq = translate_cn(q) if re.search(r"[\u4e00-\u9fff]", q) else q
     url = ("https://api.stackexchange.com/2.3/search/advanced?q=" + urllib.parse.quote(sq)
-           + "&site=stackoverflow&pagesize=100&order=desc&sort=relevance")
+           + "&site=stackoverflow&pagesize=100&order=desc&sort=votes")  # 按访问量(投票数)降序
     out = []
 
     def grab(page):
@@ -470,6 +473,7 @@ def npm_search(q, limit=10):
     if out:
         top = out[0].get("searchScore", 0) or 1
         out = [o for o in out if o.get("searchScore", 0) >= top * 0.2]
+        out.sort(key=lambda o: (o.get("score") or {}).get("detail", {}).get("popularity", 0), reverse=True)  # 按下载热度降序
     ret = []
     for o in out:
         p = o["package"]
@@ -597,7 +601,7 @@ def search_one(args):
 _CACHE = {}
 CACHE_TTL = 60  # 搜索结果缓存秒数（1 分钟内重复搜索走缓存）
 FETCH_LIMIT = 300  # 每源抓取上限（API 硬顶内尽力多抓：GitHub/SO 翻3页、npm 250、网页多引擎累加）
-PAGE_SIZE = 10  # 每页展示条数
+PAGE_SIZE = 10  # 每页展示条数(初始值)
 
 
 def _dedup(results):
@@ -766,6 +770,10 @@ class App:
         self.loading_lbls = {}  # 各标签页搜索中提示（窗口内）
         self.page = {}  # 各标签当前页码
         self.total = {}  # 各标签总条数
+        self.page_size = PAGE_SIZE  # 每页条数，随窗口大小自动调节
+        self._geom = None
+        self._resize_job = None
+        self.root.bind("<Configure>", self._on_resize)
         self.unfav_btn = ttk.Button(self.tabbar, text="− 取消收藏", style="Ghost.TButton",
                                     command=self.fav_remove_current, cursor="hand2")
         self.unfav_btn.pack(side="right")
@@ -1605,11 +1613,11 @@ class App:
     # ---------- 分页 ----------
     def _data_index(self, label, tree_idx):
         """tree 行号 → data 全量索引（含页偏移）"""
-        return self.page.get(label, 0) * PAGE_SIZE + tree_idx
+        return self.page.get(label, 0) * self.page_size + tree_idx
 
     def _update_page_state(self, label):
         n = self.total.get(label, 0)
-        pages = max(1, (n + PAGE_SIZE - 1) // PAGE_SIZE)
+        pages = max(1, (n + self.page_size - 1) // self.page_size)
         p = self.page.get(label, 0)
         pprev, plbl, pnext = self.page_bars[label]
         plbl.config(text="第 %d/%d 页 · 共 %d 条" % (p + 1, pages, n))
@@ -1621,10 +1629,10 @@ class App:
         tree.delete(*tree.get_children())
         items = self.data.get(label, []) or []
         n = len(items)
-        pages = max(1, (n + PAGE_SIZE - 1) // PAGE_SIZE)
+        pages = max(1, (n + self.page_size - 1) // self.page_size)
         p = min(self.page.get(label, 0), pages - 1)
         self.page[label] = p
-        for line, url in items[p * PAGE_SIZE:(p + 1) * PAGE_SIZE]:
+        for line, url in items[p * self.page_size:(p + 1) * self.page_size]:
             tree.insert("", "end", values=(line, url if url else "—"))
         self._update_page_state(label)
 
@@ -1637,8 +1645,30 @@ class App:
     def page_next(self, label):
         items = self.data.get(label, []) or []
         p = self.page.get(label, 0)
-        if p < (len(items) - 1) // PAGE_SIZE:
+        if p < (len(items) - 1) // self.page_size:
             self.page[label] = p + 1
+            self._render_page(label)
+
+    # ---------- 窗口尺寸 -> 每页条数自动调节 ----------
+    def _calc_page_size(self):
+        h = self.root.winfo_height()
+        return max(6, min(50, (h - 220) // 22))  # 扣除搜索区/工具栏/翻页条/状态栏约 220px，行高约 22px
+
+    def _on_resize(self, e):
+        if e.widget is not self.root:
+            return
+        if self._geom == (e.width, e.height):
+            return
+        self._geom = (e.width, e.height)
+        ps = self._calc_page_size()
+        if ps != self.page_size:
+            self.page_size = ps
+            if self._resize_job:
+                self.root.after_cancel(self._resize_job)
+            self._resize_job = self.root.after(250, self._repaint_all_pages)
+
+    def _repaint_all_pages(self):
+        for label in list(self.trees):
             self._render_page(label)
 
     # ---------- 收藏 ----------
