@@ -14,7 +14,7 @@
 
 | 版本 | 安装包 | 大小 |
 |------|--------|------|
-| 1.0.55 | [圆圆搜索-Setup-1.0.55.exe](https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.55.exe) | 48.2 MB |
+| 1.0.56 | [圆圆搜索-Setup-1.0.56.exe](https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.56.exe) | 48.2 MB |
 
 > 安装包内置代理内核，**任何电脑直接安装即可使用**，无需额外配置。
 
@@ -38,6 +38,7 @@
 - 环境：Windows 10/11 64 位
 
 ## 📝 更新日志
+- **1.0.56**：修复Bing结果被淹没:①Bing结果置顶显示(用户第一眼看到[Bing])②限制Google/DDG条数(Google≤15 DDG≤10 360≤15),四源均衡显示
 - **1.0.55**：修复Bing没结果(新增cn.bing.com国内直连通道,代理出口IP被限流时自动切换)+解除GitHub500条限制(最多抓10页=1000条,API搜索硬顶)
 - **1.0.54**：修复Bing和360没结果:①360 IP被验证码风控(同IP频繁请求),新增news.so.com新闻搜索兜底通道②Bing请求带Cookie抗限流(无cookie连续请求易被临时限流)
 - **1.0.53**：结果上限改为无上限(FETCH_LIMIT 1000→10亿,软件不再限制条数;GitHub/SO/Bing/npm等按各自接口上限抓满)

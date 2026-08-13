@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.55"
+APP_VERSION = "1.0.56"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -400,9 +400,9 @@ def _dedup_key(url):
 def bing_search(q, limit=10):
     """全网网页搜索：360/DDG/Google 并行贡献，Bing 最后补齐到满额"""
     from concurrent.futures import ThreadPoolExecutor
-    engines = [("360", _sogou_page, max(8, limit // 2)),
-               ("ddg", _ddg_page, max(3, limit // 5)),
-               ("google", _google_page, max(3, limit // 10))]
+    engines = [("360", _sogou_page, max(8, min(limit // 2, 15))),
+               ("ddg", _ddg_page, max(3, min(limit // 5, 10))),
+               ("google", _google_page, max(3, min(limit // 10, 15)))]
     out, seen = [], set()
     labels = {"bing": "Bing", "ddg": "DuckDuckGo", "360": "360", "google": "Google"}
     ex = ThreadPoolExecutor(max_workers=3)
@@ -462,6 +462,10 @@ def bing_search(q, limit=10):
                     break
         except Exception:
             continue
+    # Bing 结果置顶（避免被 Google 大量结果淹没，用户第一眼看到 [Bing]）
+    bing_items = [(t, u) for t, u in out if t.startswith("[Bing]")]
+    others = [(t, u) for t, u in out if not t.startswith("[Bing]")]
+    out = bing_items + others
     return out if out else [("网页结果获取失败", "")]
 
 
