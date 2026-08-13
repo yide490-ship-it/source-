@@ -1,3 +1,3 @@
-1.0.48
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.48.exe
-三个问题全修:1.更新检查/下载不再依赖代理(GitHub国内加速镜像,不开代理也能检查更新和下载);2.更新弹窗自适应(可缩放+说明文字可滚动,不再显示不全);3.主窗口按屏幕自适应(高分屏DPI缩放不再截断);Bing限流页自动走代理重试
+1.0.49
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.49.exe
+DuckDuckGo双入口稳定出结果+四源保底(四个引擎永远都有)+更新弹窗按文字精确自适应(打开即显示全部说明,可缩放)

@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.48"
+APP_VERSION = "1.0.49"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -324,19 +324,32 @@ def _sogou_page(q, limit):
 
 
 def _ddg_page(q, limit):
-    try:
-        d = fetch("https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote(q), use_proxy=False)
-    except Exception:
-        d = fetch("https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote(q))  # 直连失败走代理重试
-    out = []
-    for m in re.finditer(r'<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
-        link = html.unescape(m.group(1)).strip()
-        if "duckduckgo.com/l/?uddg=" in link:  # DDG 跳转链接还原真实地址
-            link = urllib.parse.unquote(link.split("uddg=")[1].split("&")[0])
-        title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
-        if link.startswith("http") and title and len(title) > 2:
-            out.append((title[:90], link))
-    return out
+    """DDG 双入口(lite/html) x 双通道(直连/代理)，空结果自动切换，保证稳定出结果"""
+    urls = [
+        "https://lite.duckduckgo.com/lite/?q=" + urllib.parse.quote(q),
+        "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote(q),
+    ]
+    best = []
+    for url in urls:
+        for use_proxy in (False, True):
+            try:
+                d = fetch(url, use_proxy=use_proxy)
+            except Exception:
+                continue
+            out = []
+            for m in re.finditer(r'<a[^>]*rel="nofollow"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
+                link = html.unescape(m.group(1)).strip()
+                if "uddg=" in link:  # DDG 跳转链接还原真实地址
+                    link = urllib.parse.unquote(link.split("uddg=")[1].split("&")[0])
+                title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+                if link.startswith("http") and title and len(title) > 2 and "duckduckgo.com" not in link:
+                    out.append((title[:90], link))
+            if len(out) > len(best):
+                best = out
+            if len(best) >= limit:
+                return best[:limit]
+    return best[:limit]
+
 
 
 def _google_page(q, limit):
@@ -406,6 +419,27 @@ def bing_search(q, limit=10):
                     break
         except Exception:
             pass
+    # 四源保底：缺哪个引擎 → 专项重抓（换入口/通道），保证四个引擎都有结果
+    have = set()
+    for t, _u in out:
+        for k in labels.values():
+            if t.startswith("[" + k + "]"):
+                have.add(k)
+    for name, fn, lab in [("ddg", _ddg_page, "DuckDuckGo"), ("360", _sogou_page, "360"),
+                          ("google", _google_page, "Google"), ("bing", bing_page, "Bing")]:
+        if lab in have or len(out) >= limit:
+            continue
+        try:
+            for title, url in fn(q, max(5, limit - len(out))):
+                key = _dedup_key(url)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(("[" + lab + "] " + title, url))
+                if len(out) >= limit:
+                    break
+        except Exception:
+            continue
     return out if out else [("网页结果获取失败", "")]
 
 
@@ -1607,16 +1641,26 @@ class App:
             body.rowconfigure(0, weight=1)
             body.columnconfigure(0, weight=1)
             if note:
-                h_est = min(12, max(3, len(note) // 38 + 1))  # 按字数估算行数
                 txtw = tk.Text(body, wrap="word", relief="flat", borderwidth=0,
                                highlightthickness=0, font=("Microsoft YaHei UI", 10),
                                fg=t["fg"], bg=t["tab"], padx=10, pady=8, spacing1=3, spacing3=3,
-                               selectbackground=t["tab"], height=h_est, cursor="arrow")
+                               selectbackground=t["tab"], width=52, height=2, cursor="arrow")
                 txtw.grid(row=0, column=0, sticky="nsew")
                 sb = tk.Scrollbar(body, command=txtw.yview)
                 sb.grid(row=0, column=1, sticky="ns")
                 txtw.config(yscrollcommand=sb.set)
                 txtw.insert("1.0", note)
+                win.update_idletasks()
+                # 先映射一次让 Text 按真实宽度换行，再按文字实际显示行数定高（打开即显示全部）
+                w0 = min(max(420, win.winfo_reqwidth() + 30), win.winfo_screenwidth() - 60)
+                h0 = min(max(280, win.winfo_reqheight() + 16), win.winfo_screenheight() - 80)
+                win.geometry("%dx%d" % (w0, h0))
+                win.update()
+                try:
+                    lines = int(txtw.count("1.0", "end-1c", "displaylines")[0])
+                except Exception:
+                    lines = max(3, len(note) // 40 + 1)
+                txtw.config(height=min(max(lines + 1, 3), 18))  # 超 18 行才滚动
                 txtw.config(state="disabled")
             row = tk.Frame(win, bg=t["bg"])
             row.pack(pady=(10, 12))
