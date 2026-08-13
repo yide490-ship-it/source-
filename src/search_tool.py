@@ -35,7 +35,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.46"
+APP_VERSION = "1.0.47"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -265,15 +265,18 @@ def _extract(html_text, patterns):
 
 
 def _sogou_page(q, limit):
-    # 360 搜索（无验证码，翻页有效，可贡献 50+ 条；翻页并行加速）
+    """360 搜索：PC 版 www.so.com 翻页(无验证码，50+ 条)；空页/风控自动降级 m.so.com 移动版(稳定 12 条兜底)"""
     from concurrent.futures import ThreadPoolExecutor
     out, seen = [], set()
 
     def grab(pn):
+        url = "https://www.so.com/s?q=%s&pn=%d" % (urllib.parse.quote(q), pn)
         try:
-            d = fetch("https://www.so.com/s?q=%s&pn=%d" % (urllib.parse.quote(q), pn), use_proxy=False)
+            d = fetch(url, use_proxy=False)  # 国内直连优先
         except Exception:
             return []
+        if not d or "验证" in d or "异常" in d or len(d) < 4000:
+            return []  # 风控页/空结果页 → 交给降级路径
         res = []
         for t, u in _extract(d, [r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>']):
             if "ai.so.com" in u or "so.com/s?q=" in u:
@@ -284,7 +287,7 @@ def _sogou_page(q, limit):
 
     ex = ThreadPoolExecutor(max_workers=3)
     try:
-        for chunk in ex.map(grab, range(1, 7)):  # 6 页
+        for chunk in ex.map(grab, range(1, 7)):  # PC 版 6 页并行
             for t, u in chunk:
                 if len(out) >= limit:
                     break
@@ -295,6 +298,27 @@ def _sogou_page(q, limit):
                 out.append((t, u))
     finally:
         ex.shutdown(wait=False)
+    if out:
+        return out
+    # 降级：m.so.com 移动版（稳定 12 条；翻页参数无效，仅取第一页）
+    try:
+        d = fetch("https://m.so.com/s?q=%s" % urllib.parse.quote(q), use_proxy=False)
+        for m in re.finditer(r'<h3[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
+            u = html.unescape(m.group(1)).strip()
+            if "jump?u=" in u:  # 移动版跳转链接还原真实地址
+                u = urllib.parse.unquote(u.split("jump?u=")[1].split("&")[0])
+            t = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+            t = re.sub(r"^(文章浏览阅读[\d.]+w?次\s*点赞\d+次\.?\s*|简介：)", "", t).strip()
+            if u.startswith("http") and t and "#close" not in u and "m.so.com/s?" not in u:
+                key = _dedup_key(u)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append((t[:90], u))
+                if len(out) >= limit:
+                    break
+    except Exception:
+        pass
     return out
 
 
@@ -342,17 +366,16 @@ def bing_search(q, limit=10):
     from concurrent.futures import ThreadPoolExecutor
     engines = [("360", _sogou_page, max(8, limit // 2)),
                ("ddg", _ddg_page, max(3, limit // 5)),
-               ("google", _google_page, max(3, limit // 10)),
-               ("bing", bing_page, limit)]  # Bing 补满
+               ("google", _google_page, max(3, limit // 10))]
     out, seen = [], set()
     labels = {"bing": "Bing", "ddg": "DuckDuckGo", "360": "360", "google": "Google"}
-    ex = ThreadPoolExecutor(max_workers=4)
+    ex = ThreadPoolExecutor(max_workers=3)
     futs = [(name, per, ex.submit(fn, q, limit)) for name, fn, per in engines]
     try:
         for name, per, fut in futs:
             try:
                 got = 0
-                for title, url in fut.result(timeout=30):
+                for title, url in fut.result(timeout=45):
                     if got >= per:
                         break
                     key = _dedup_key(url)
@@ -369,6 +392,19 @@ def bing_search(q, limit=10):
                 break
     finally:
         ex.shutdown(wait=False)  # 不等待卡住的引擎线程
+    # Bing 最后串行补满（避免与其它引擎并发触发 Bing 限流只给第 1 页）
+    if len(out) < limit:
+        try:
+            for title, url in bing_page(q, limit):
+                key = _dedup_key(url)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(("[Bing] %s" % title, url))
+                if len(out) >= limit:
+                    break
+        except Exception:
+            pass
     return out if out else [("网页结果获取失败", "")]
 
 

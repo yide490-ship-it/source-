@@ -1,3 +1,3 @@
-1.0.46
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.46.exe
-设置页自适应(按内容自动定高,可缩放,不再截断按钮);帮助页自适应(可缩放+滚动条,内容随时可看全)
+1.0.47
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.47.exe
+修复Bing和360消失:360网页版空结果自动降级移动版兜底(稳定12条,网页版正常时仍50+条);Bing改最后串行抓取不再被并发限流(单独抓满);Google聚合超时延长不再丢结果
