@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.50"
+APP_VERSION = "1.0.51"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -427,8 +427,8 @@ def bing_search(q, limit=10):
                 have.add(k)
     for name, fn, lab in [("ddg", _ddg_page, "DuckDuckGo"), ("360", _sogou_page, "360"),
                           ("google", _google_page, "Google"), ("bing", bing_page, "Bing")]:
-        if lab in have or len(out) >= limit:
-            continue
+        if lab in have:
+            continue  # 已有该引擎；缺失的引擎必须补至少 1 条（即使总数已到 limit）
         try:
             for title, url in fn(q, max(5, limit - len(out))):
                 key = _dedup_key(url)
@@ -451,24 +451,36 @@ def bing_page(q, limit):
     def grab(first):
         url = ("https://www.bing.com/search?q=" + urllib.parse.quote(q)
                + "&mkt=zh-CN&count=30&first=%d" % first)
-        try:
-            d = fetch(url, use_proxy=False)  # 国内直连优先
-        except Exception:
-            d = None
-        # 限流/验证页检测 → 走代理重试
-        if not d or "\u9a8c\u8bc1" in d or "\u5b89\u5168\u9a8c\u8bc1" in d or "challenge" in d.lower() or len(d) < 3000:
-            try:
-                d = fetch(url)  # 走代理
-            except Exception:
-                return []
-        res = []
-        for m in re.finditer(r'<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
-            link = html.unescape(m.group(1)).strip()
-            title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
-            if link.startswith("http") and title and "bing.com" not in link:
-                res.append((title[:90], link))
-        return res
 
+        def parse(d):
+            if not d or len(d) < 3000:
+                return []
+            res = []
+            for m in re.finditer(r'<h2[^>]*>.*?<a[^>]*href="([^"]+)"[^>]*>(.*?)</a>', d, re.S):
+                link = html.unescape(m.group(1)).strip()
+                title = html.unescape(re.sub(r"<[^>]+>", "", m.group(2))).strip()
+                if link.startswith("http") and title and "bing.com" not in link:
+                    res.append((title[:90], link))
+            return res
+
+        # 代理优先（GUI 内置代理稳定出结果；CLI 无代理时自动回落直连）
+        res = []
+        try:
+            res = parse(fetch(url))
+        except Exception:
+            res = []
+        if not res:  # 限流/空结果 → 冷却后代理重试一次（Bing 无 cookie 连续请求易被临时限流）
+            try:
+                time.sleep(1.5)
+                res = parse(fetch(url))
+            except Exception:
+                res = []
+        if not res:  # 直连兜底
+            try:
+                res = parse(fetch(url, use_proxy=False))
+            except Exception:
+                res = []
+        return res
     ex = ThreadPoolExecutor(max_workers=3)
     try:
         for chunk in ex.map(grab, pages):
