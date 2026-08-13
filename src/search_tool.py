@@ -35,7 +35,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.43"
+APP_VERSION = "1.0.44"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -219,23 +219,39 @@ def fetch(url, timeout=8, use_proxy=True):
 GH_MIRROR = "https://gh-proxy.net/"
 
 def github_search(q, limit=10):
-    api = "https://api.github.com/search/repositories?q=" + urllib.parse.quote(q) + f"&per_page={limit}"
-    data = None
+    # 每页 100 条翻页并行抓取（未认证 API 限流 10 req/min，上限 5 页）
+    from concurrent.futures import ThreadPoolExecutor
+    api = "https://api.github.com/search/repositories?q=" + urllib.parse.quote(q) + "&per_page=100"
+    pages = range(1, min((limit + 99) // 100, 5) + 1)
+    items = []
+
+    def grab(page):
+        u = api + "&page=%d" % page
+        try:
+            return json.loads(fetch(u))
+        except Exception:
+            for m in ("https://gh-proxy.com/", "https://gh-proxy.net/", "https://ghps.cc/"):
+                try:
+                    return json.loads(fetch(m + u, use_proxy=False))
+                except Exception:
+                    continue
+        return None
+
+    ex = ThreadPoolExecutor(max_workers=3)
     try:
-        data = json.loads(fetch(api))  # 直连 api.github.com（走代理）
-    except Exception:
-        # API 限流/失败时走镜像兜底（镜像直连，多级备用）
-        for m in ("https://gh-proxy.com/", "https://gh-proxy.net/", "https://ghps.cc/"):
-            try:
-                data = json.loads(fetch(m + api, use_proxy=False))
+        for data in ex.map(grab, pages):
+            its = data.get("items", []) if isinstance(data, dict) else []
+            if not its:
                 break
-            except Exception:
-                continue
-        if data is None:
-            return [("GitHub 搜索失败（API 限流或网络异常，可尝试更换节点）", "")]
-    items = data.get("items", []) if isinstance(data, dict) else []
+            items.extend(its)
+            if len(items) >= limit:
+                break
+    finally:
+        ex.shutdown(wait=False)
+    if not items:
+        return [("GitHub 搜索失败（API 限流或网络异常，可尝试更换节点）", "")]
     return [("★%d  %s  |  %s" % (it["stargazers_count"], it["full_name"], (it.get("description") or "")[:60]),
-             (GH_MIRROR if not PROXY else "") + it["html_url"]) for it in items]
+             (GH_MIRROR if not PROXY else "") + it["html_url"]) for it in items[:limit]]
 
 def _extract(html_text, patterns):
     out = []
@@ -388,35 +404,78 @@ def bing_page(q, limit):
     return out
 
 def so_search(q, limit=10):
-    # 中文关键词先翻译成英文再搜（Stack Overflow 是英文站）
+    # 中文关键词先翻译成英文再搜（Stack Overflow 是英文站）；每页 100 条翻页并行
+    from concurrent.futures import ThreadPoolExecutor
     sq = translate_cn(q) if re.search(r"[\u4e00-\u9fff]", q) else q
     url = ("https://api.stackexchange.com/2.3/search/advanced?q=" + urllib.parse.quote(sq)
-           + f"&site=stackoverflow&pagesize={limit}&order=desc&sort=relevance")
-    try:
-        data = json.loads(fetch(url, use_proxy=False))  # 直连优先：避开机场共享 IP 被 SO 限流
-    except Exception:
+           + "&site=stackoverflow&pagesize=100&order=desc&sort=relevance")
+    out = []
+
+    def grab(page):
+        u = url + "&page=%d" % page
         try:
-            data = json.loads(fetch(url))  # 直连失败走代理重试
+            return json.loads(fetch(u, use_proxy=False))  # 直连优先：避开机场共享 IP 被 SO 限流
         except Exception:
-            return [("Stack Overflow 搜索失败（网络或限流，可稍后重试）", "")]
-    return [("%d↑  %s" % (it.get("score", 0), it["title"][:80]), it["link"]) for it in data.get("items", [])]
+            try:
+                return json.loads(fetch(u))  # 直连失败走代理重试
+            except Exception:
+                return None
+
+    ex = ThreadPoolExecutor(max_workers=3)
+    try:
+        for data in ex.map(grab, range(1, min((limit + 99) // 100, 5) + 1)):
+            if not data:
+                break
+            its = data.get("items", [])
+            if not its:
+                break
+            out.extend(its)
+            if len(out) >= limit:
+                break
+    finally:
+        ex.shutdown(wait=False)
+    if not out:
+        return [("Stack Overflow 搜索失败（网络或限流，可稍后重试）", "")]
+    return [("%d↑  %s" % (it.get("score", 0), it["title"][:80]), it["link"]) for it in out[:limit]]
 
 def npm_search(q, limit=10):
-    url = "https://registry.npmjs.org/-/v1/search?text=" + urllib.parse.quote(q) + f"&size={limit}"
-    try:
-        data = json.loads(fetch(url, use_proxy=False))  # 直连优先：registry.npmjs.org 国内可直连
-    except Exception:
-        data = json.loads(fetch(url))  # 直连失败走代理重试
-    objs = data.get("objects", [])
-    if objs:
-        top = objs[0].get("searchScore", 0) or 1
-        objs = [o for o in objs if o.get("searchScore", 0) >= top * 0.2]
+    # npm 搜索 API size 硬顶 250，from 参数翻页补足
+    from concurrent.futures import ThreadPoolExecutor
+    base = "https://registry.npmjs.org/-/v1/search?text=" + urllib.parse.quote(q)
     out = []
-    for o in objs:
+
+    def grab(frm):
+        u = base + "&size=100&from=%d" % frm
+        try:
+            return json.loads(fetch(u, use_proxy=False))  # 直连优先：registry.npmjs.org 国内可直连
+        except Exception:
+            try:
+                return json.loads(fetch(u))
+            except Exception:
+                return None
+
+    ex = ThreadPoolExecutor(max_workers=3)
+    try:
+        for data in ex.map(grab, range(0, min(limit, 300), 100)):
+            if not data:
+                break
+            objs = data.get("objects", [])
+            if not objs:
+                break
+            out.extend(objs)
+            if len(out) >= limit:
+                break
+    finally:
+        ex.shutdown(wait=False)
+    if out:
+        top = out[0].get("searchScore", 0) or 1
+        out = [o for o in out if o.get("searchScore", 0) >= top * 0.2]
+    ret = []
+    for o in out:
         p = o["package"]
         link = (p.get("links", {}) or {}).get("npm") or (p.get("links", {}) or {}).get("homepage") or ""
-        out.append((p["name"] + "  |  " + (p.get("description") or "")[:60], link))
-    return out
+        ret.append((p["name"] + "  |  " + (p.get("description") or "")[:60], link))
+    return ret if ret else [("npm 搜索失败（网络异常）", "")]
 
 SOURCES = [("GitHub 仓库", github_search), ("网页结果", bing_search),
            ("Stack Overflow", so_search), ("npm 包", npm_search)]
@@ -537,7 +596,7 @@ def search_one(args):
 
 _CACHE = {}
 CACHE_TTL = 60  # 搜索结果缓存秒数（1 分钟内重复搜索走缓存）
-FETCH_LIMIT = 100  # 每源抓取上限（不限制展示，分页浏览）
+FETCH_LIMIT = 300  # 每源抓取上限（API 硬顶内尽力多抓：GitHub/SO 翻3页、npm 250、网页多引擎累加）
 PAGE_SIZE = 10  # 每页展示条数
 
 

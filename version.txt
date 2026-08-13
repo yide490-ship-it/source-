@@ -1,3 +1,3 @@
-1.0.43
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.43.exe
-每源结果上限提升至100条;网页搜索新增DuckDuckGo/Google引擎,四引擎并行提速6倍(99s→15s);百度/搜狗反爬已移除
+1.0.44
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.44.exe
+每源结果上限提升至300条:GitHub/SO/npm翻页并行抓取,npm翻页突破250硬顶;修复README下载行文字重复bug
