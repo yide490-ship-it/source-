@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.54"
+APP_VERSION = "1.0.55"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -223,7 +223,7 @@ def github_search(q, limit=10):
     # 每页 100 条翻页并行抓取（未认证 API 限流 10 req/min，上限 5 页）
     from concurrent.futures import ThreadPoolExecutor
     api = "https://api.github.com/search/repositories?q=" + urllib.parse.quote(q) + "&per_page=100&sort=stars&order=desc"  # 按访问量(star)降序
-    pages = range(1, min((limit + 99) // 100, 5) + 1)
+    pages = range(1, min((limit + 99) // 100, 10) + 1)  # \u89e3\u9664 500 \u6761\u4e0a\u9650\uff1a\u6700\u591a 10 \u9875 = 1000 \u6761\uff08GitHub API \u641c\u7d22\u786c\u9876 1000\uff0c\u672a\u8ba4\u8bc1 10 req/min\uff09
     items = []
 
     def grab(page):
@@ -470,8 +470,10 @@ def bing_page(q, limit):
     out = []
     pages = list(range(1, min(limit, 60) + 1, 10))  # Bing \u6bcf\u9875\u5b9e\u9645\u7ea6 10 \u6761\uff0c\u6b65\u8fdb 10 \u8fde\u7eed\u7ffb\u9875
 
-    def _fb(url, use_proxy):
+    def _fb(url, use_proxy, cn=False):
         # Bing \u5e26 Cookie \u8bf7\u6c42\uff08\u65e0 cookie \u8fde\u7eed\u8bf7\u6c42\u6613\u89e6\u53d1\u9650\u6d41\uff09
+        if cn:  # cn.bing.com \u56fd\u5185\u76f4\u8fde\u901a\u9053\uff08\u4ee3\u7406\u51fa\u53e3 IP \u88ab\u9650\u6d41\u65f6\u4f7f\u7528\uff09
+            url = url.replace("www.bing.com", "cn.bing.com")
         hdr = dict(HDRS)
         hdr["Cookie"] = "SRCHHPGUSR=SRCHLANG=zh-Hans; _EDGE_S=mkt=zh-cn; MUID=0A1B2C3D4E5F60718293A4B5C6D7E8F9"
         req = urllib.request.Request(url, headers=hdr)
@@ -497,7 +499,7 @@ def bing_page(q, limit):
                     res.append((title[:90], link))
             return res
 
-        # \u4ee3\u7406\u4f18\u5148\uff08GUI \u5185\u7f6e\u4ee3\u7406\u7a33\u5b9a\u51fa\u7ed3\u679c\uff1bCLI \u65e0\u4ee3\u7406\u65f6\u81ea\u52a8\u56de\u843d\u76f4\u8fde\uff09
+        # \u4ee3\u7406\u4f18\u5148\uff08GUI \u5185\u7f6e\u4ee3\u7406\u7a33\u5b9a\u51fa\u7ed3\u679c\uff09
         res = []
         try:
             res = parse(_fb(url, True))
@@ -509,7 +511,12 @@ def bing_page(q, limit):
                 res = parse(_fb(url, True))
             except Exception:
                 res = []
-        if not res:  # \u76f4\u8fde\u515c\u5e95
+        if not res:  # cn.bing.com \u56fd\u5185\u76f4\u8fde\uff08\u4ee3\u7406\u51fa\u53e3 IP \u88ab\u9650\u6d41\u65f6\u7684\u5907\u7528\u901a\u9053\uff09
+            try:
+                res = parse(_fb(url, False, cn=True))
+            except Exception:
+                res = []
+        if not res:  # \u76f4\u8fde\u515c\u5e95\uff08www.bing.com\uff09
             try:
                 res = parse(_fb(url, False))
             except Exception:
