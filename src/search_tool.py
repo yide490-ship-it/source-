@@ -35,7 +35,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.45"
+APP_VERSION = "1.0.46"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -1099,12 +1099,9 @@ class App:
         win = tk.Toplevel(self.root)
         win.title("设置 · 圆圆搜索")
         win.configure(bg=t["bg"])
-        win.resizable(False, False)
         install_dir = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
                        else os.path.dirname(os.path.abspath(__file__)))
         rows = [("版本", APP_VERSION), ("安装位置", install_dir), ("数据位置", DATA_DIR)]
-        w = max(620, max(len(r[1]) for r in rows) * 9 + 160)
-        win.geometry("%dx%d" % (w, 170 + 38 * len(rows) + 110))
         win.transient(self.root)
         for i, (k, v) in enumerate(rows):
             tk.Label(win, text=k, font=("Microsoft YaHei UI", 10, "bold"),
@@ -1139,6 +1136,14 @@ class App:
                       fg=t["accent"], bg=t["card"], activebackground=t["tab"],
                       activeforeground=t["fg"], bd=1, relief="solid", highlightthickness=0,
                       cursor="hand2", command=cmd).grid(row=i // 3, column=i % 3, padx=6, pady=4, sticky="ew")
+        win.update_idletasks()
+        w = min(max(640, win.winfo_reqwidth()), win.winfo_screenwidth() - 60)
+        h = min(win.winfo_reqheight(), win.winfo_screenheight() - 80)
+        win.geometry("%dx%d" % (w, h))
+        win.resizable(True, True)
+        win.minsize(560, 320)
+        win.columnconfigure(1, weight=1)
+        win.columnconfigure(2, weight=1)
 
     def clear_history(self):
         import tkinter.messagebox as mb
@@ -1348,8 +1353,10 @@ class App:
         win = tk.Toplevel(self.root)
         win.title("帮助 · 圆圆搜索")
         win.configure(bg=t["bg"])
-        win.geometry("560x460")
         win.transient(self.root)
+        win.geometry("600x500")
+        win.minsize(440, 320)
+        win.resizable(True, True)
         txt = ("圆圆搜索 使用说明\n\n"
                "◆ 搜索：输入关键词回车或点「搜 索」，四个来源并行查找（GitHub / 网页 / Stack Overflow / npm）\n"
                "◆ 打开：双击结果行在浏览器打开；右键复制链接；Ctrl+C 复制选中\n"
@@ -1362,8 +1369,17 @@ class App:
                "◆ 快捷键：Ctrl+F 聚焦输入框 · Ctrl+S 搜索 · Ctrl+D 深浅色 · Delete 取消收藏\n"
                "◆ 数据位置：收藏/历史/订阅缓存存于 %APPDATA%\\圆圆搜索\\（设置里可打开）\n"
                "◆ 常见问题：内置代理启动失败 → 看 %APPDATA%\\圆圆搜索\\error.log，或重新安装\n")
-        tk.Label(win, text=txt, font=("Microsoft YaHei UI", 10), justify="left", anchor="nw",
-                 fg=t["fg"], bg=t["bg"]).pack(fill="both", expand=True, padx=20, pady=16)
+        frame = tk.Frame(win, bg=t["bg"])
+        frame.pack(fill="both", expand=True, padx=18, pady=14)
+        txtw = tk.Text(frame, font=("Microsoft YaHei UI", 10), fg=t["fg"], bg=t["bg"],
+                       wrap="word", relief="flat", borderwidth=0, highlightthickness=0,
+                       padx=10, pady=8, spacing1=3, spacing3=3, selectbackground=t["tab"])
+        sb = tk.Scrollbar(frame, command=txtw.yview)
+        sb.pack(side="right", fill="y")
+        txtw.pack(side="left", fill="both", expand=True)
+        txtw.config(yscrollcommand=sb.set)
+        txtw.insert("1.0", txt)
+        txtw.config(state="disabled")
 
     def set_proxy(self):
         import tkinter.simpledialog as sd
