@@ -36,7 +36,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.49"
+APP_VERSION = "1.0.50"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -743,6 +743,12 @@ def system_dark():
         return v == 0
     except Exception:
         return False
+
+
+def ver_slug(dl):
+    """从下载链接提取版本号，用于临时安装包文件名"""
+    m = re.search(r"Setup-([\d.]+)\.exe", dl or "")
+    return m.group(1) if m else "latest"
 
 
 class App:
@@ -1667,7 +1673,7 @@ class App:
             tk.Button(row, text="立即更新", font=("Microsoft YaHei UI", 10, "bold"),
                       fg="white", bg=t["accent"], activebackground=t["accent"],
                       bd=0, padx=18, pady=4, cursor="hand2",
-                      command=lambda: (webbrowser.open(self._mirror_url(dl)) if dl else None, win.destroy())).pack(side="left", padx=8)
+                      command=lambda: self._dl_update(win, dl)).pack(side="left", padx=8)
             tk.Button(row, text="稍后更新", font=("Microsoft YaHei UI", 10),
                       fg=t["fg"], bg=t["tab"], activebackground=t["tab"],
                       bd=0, padx=14, pady=4, cursor="hand2",
@@ -1682,6 +1688,158 @@ class App:
             pass
 
     
+    def _dl_update(self, win, dl):
+        """软件内下载更新：进度条 + 自动静默安装，装完自动启动新版"""
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        if not dl:
+            return
+        import threading as _th, subprocess, tempfile, socket
+        try:
+            import tkinter.ttk as ttk
+        except Exception:
+            ttk = None
+        t = THEMES["dark" if self.dark else "light"]
+        d = tk.Toplevel(self.root)
+        d.title("\u6b63\u5728\u4e0b\u8f7d\u66f4\u65b0")
+        d.configure(bg=t["bg"])
+        d.resizable(False, False)
+        try:
+            d.transient(self.root)
+        except Exception:
+            pass
+        tk.Label(d, text="\u25c6 \u6b63\u5728\u4e0b\u8f7d\u66f4\u65b0...", font=("Microsoft YaHei UI", 13, "bold"),
+                 fg=t["accent"], bg=t["bg"]).pack(pady=(16, 4))
+        st_lb = tk.Label(d, text="\u6b63\u5728\u8fde\u63a5\u670d\u52a1\u5668...", font=("Microsoft YaHei UI", 10),
+                         fg=t["fg"], bg=t["bg"])
+        st_lb.pack(pady=(2, 8))
+        bar = ttk.Progressbar(d, length=360, mode="determinate", maximum=100)
+        bar.pack(padx=24)
+        pct_lb = tk.Label(d, text="0%", font=("Microsoft YaHei UI", 10), fg=t["sub"], bg=t["bg"])
+        pct_lb.pack(pady=(6, 2))
+        btn_row = tk.Frame(d, bg=t["bg"])
+        btn_row.pack(pady=(6, 14))
+        cancel_btn = tk.Button(btn_row, text="\u53d6\u6d88", font=("Microsoft YaHei UI", 10),
+                               fg=t["fg"], bg=t["tab"], activebackground=t["tab"],
+                               bd=0, padx=20, pady=4, cursor="hand2")
+        cancel_btn.pack(side="left", padx=8)
+        d.update_idletasks()
+        w, h = d.winfo_reqwidth() + 30, d.winfo_reqheight() + 10
+        x = self.root.winfo_x() + (self.root.winfo_width() - w) // 2
+        y = self.root.winfo_y() + (self.root.winfo_height() - h) // 2
+        d.geometry("%dx%d+%d+%d" % (w, h, max(x, 0), max(y, 0)))
+
+        dest = os.path.join(tempfile.gettempdir(), "yy-update-%s.exe" % ver_slug(dl))
+        urls = [m + dl for m in UPDATE_MIRRORS] + [dl]  # 镜像优先，raw 原地址兜底（内置代理可用）
+        flag = {"run": True, "pct": 0, "mb": 0.0, "total": 0.0, "err": "", "done": False, "cancelled": False}
+
+        def worker():
+            for url in urls:
+                if not flag["run"]:
+                    return
+                try:
+                    handlers = []
+                    if PROXY:
+                        ph = urllib.request.ProxyHandler({"http": PROXY, "https": PROXY})
+                        handlers.append(ph)
+                    op = urllib.request.build_opener(*handlers)
+                    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+                    with op.open(req, timeout=60) as resp, open(dest, "wb") as f:
+                        total = int(resp.headers.get("Content-Length") or 0)
+                        flag["total"] = total / 1048576.0
+                        got = 0
+                        while True:
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            if not flag["run"]:
+                                flag["cancelled"] = True
+                                try:
+                                    os.remove(dest)
+                                except Exception:
+                                    pass
+                                return
+                            got += len(chunk)
+                            f.write(chunk)
+                            if total:
+                                flag["pct"] = min(99, got * 100 // total)
+                                flag["mb"] = got / 1048576.0
+                    if os.path.getsize(dest) < 1024 * 1024:  # 太小=镜像错误页
+                        raise IOError("bad size")
+                    flag["pct"] = 100
+                    flag["done"] = True
+                    return
+                except Exception as e:
+                    flag["err"] = str(e)[:80]
+                    try:
+                        os.remove(dest)
+                    except Exception:
+                        pass
+            flag["err"] = flag["err"] or "\u4e0b\u8f7d\u5931\u8d25"
+
+        def tick():
+            if flag["done"]:
+                bar["value"] = 100
+                pct_lb.config(text="100%")
+                self._install_update(d, dest)
+                return
+            if flag["cancelled"] or not flag["run"]:
+                d.destroy()
+                return
+            if flag["err"]:
+                st_lb.config(text="\u4e0b\u8f7d\u5931\u8d25\uff1a" + flag["err"] + "\uff08\u53ef\u91cd\u8bd5\uff09", fg="#dc2626")
+                bar["value"] = 0
+                pct_lb.config(text="0%")
+                cancel_btn.config(text="\u91cd\u8bd5", command=lambda: (flag.update(run=True, err="", pct=0),
+                                                                          st_lb.config(text="\u6b63\u5728\u8fde\u63a5\u670d\u52a1\u5668...", fg=t["fg"]),
+                                                                          _th.Thread(target=worker, daemon=True).start()))
+                return
+            bar["value"] = flag["pct"]
+            if flag["total"]:
+                pct_lb.config(text="%d%%  (%.1f/%.1f MB)" % (flag["pct"], flag["mb"], flag["total"]))
+            else:
+                pct_lb.config(text="%d%%  (%.1f MB)" % (flag["pct"], flag["mb"]))
+            self.root.after(200, tick)
+
+        def on_cancel():
+            flag["run"] = False
+            cancel_btn.config(state="disabled", text="\u6b63\u5728\u53d6\u6d88...")
+        cancel_btn.config(command=on_cancel)
+        _th.Thread(target=worker, daemon=True).start()
+        self.root.after(200, tick)
+
+    def _install_update(self, d, dest):
+        """静默安装下载好的安装包，装完自动启动新版，随后退出自身"""
+        import subprocess
+        try:
+            d.destroy()
+        except Exception:
+            pass
+        try:
+            self._tray_ready = False
+            if self._tray is not None:
+                try:
+                    self._tray.stop()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:  # 先杀掉内置代理，避免安装时文件被占用
+            subprocess.Popen(["taskkill", "/IM", "mihomo.exe", "/F"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=0x08000000)
+        except Exception:
+            pass
+        try:
+            subprocess.Popen([dest, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
+                             cwd=os.path.dirname(dest),
+                             creationflags=0x08000000 | 0x00000008)
+        except Exception:
+            pass
+        self.root.after(800, self._quit_app)
+
     def _open_loading(self, q):
         """搜索中提示：只在软件窗口内显示（各标签页中央），不弹独立窗口"""
         for lbl in self.loading_lbls.values():
