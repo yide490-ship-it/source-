@@ -44,7 +44,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.61"
+APP_VERSION = "1.0.62"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -916,6 +916,7 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         self._tray = None
         self._tray_ready = False
+        self._warming = False  # 预热测节点防重入
         self._setup_tray()
         root.bind("<Unmap>", self._on_unmap)
         if not self.builtin_off and (PROXY == "" or PROXY.startswith("http://127.0.0.1:")):
@@ -1200,6 +1201,49 @@ class App:
         self.update_builtin_btn()
         if ok:
             self._update_node_status()
+            self._warmup_start()  # 代理就绪后自动预热：测 Google 连通性，不通自动切节点
+
+    def _warmup_start(self):
+        """后台预热：测 Google 通道，不通自动切节点（最多 3 次），让用户打开就能用"""
+        if self._warming:
+            return
+        self._warming = True
+        threading.Thread(target=self._warmup_run, daemon=True).start()
+
+    def _warmup_run(self):
+        url = "https://news.google.com/rss/search?q=test&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
+        ok = False
+        for i in range(4):  # 第 1 次直测，不通则切节点重测（最多 3 次）
+            try:
+                d = fetch(url, timeout=8)
+                if d and "<item>" in d:
+                    ok = True
+                    break
+            except Exception:
+                pass
+            if i < 3:
+                try:
+                    if _clash_switch_node():
+                        time.sleep(1.5)  # 等新节点生效
+                except Exception:
+                    time.sleep(1.5)
+        self.root.after(0, lambda: self._warmup_done(ok))
+
+    def _warmup_done(self, ok):
+        self._warming = False
+        if ok:
+            self._update_node_status()
+            try:
+                t = self.status.cget("text")
+                if t.startswith("内置代理"):
+                    self.status.config(text=t + " ✓ 已就绪")
+            except Exception:
+                pass
+        else:
+            try:
+                self.status.config(text="⚠ 代理节点全部不通，搜索时会自动切换重试")
+            except Exception:
+                pass
 
     def _update_node_status(self):
         """在状态栏显示当前代理节点"""
