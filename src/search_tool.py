@@ -44,7 +44,7 @@ def _load_default_sub():
 
 # 内置机场订阅（默认开箱即用；在「代理」里可改为其它订阅或清除）
 SUB_URL_DEFAULT = _load_default_sub()
-APP_VERSION = "1.0.62"
+APP_VERSION = "1.0.63"
 
 HDRS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -363,9 +363,10 @@ def _ddg_page(q, limit):
     ]
     best = []
     for url in urls:
-        for use_proxy in (False, True):
+        # 有内置代理时只走代理（国内直连 DDG 必被墙，纯浪费超时）；无代理才走直连
+        for use_proxy in ((True,) if PROXY else (False, True)):
             try:
-                d = fetch(url, use_proxy=use_proxy)
+                d = fetch(url, timeout=6, use_proxy=use_proxy)
             except Exception:
                 continue
             out = []
@@ -429,30 +430,22 @@ def _google_page(q, limit):
     import xml.etree.ElementTree as ET
     url = "https://news.google.com/rss/search?q=" + urllib.parse.quote(q) + "&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"
     d = None
-    for _ in range(2):  # 代理失败 → 直连兜底 → 间隔重试（内置代理节点偶发不可达，直连常可用）
+    for _ in range(2):  # Google 国内直连必败，只走代理；失败短等后重试
         if not d:
             try:
-                d = fetch(url, timeout=8)
-            except Exception:
-                pass
-        if not d:
-            try:
-                d = fetch(url, timeout=8, use_proxy=False)
+                d = fetch(url, timeout=6)
             except Exception:
                 pass
         if d:
             break
-        time.sleep(2)
-    if not d and _clash_switch_node():
-        # 代理+直连都失败 → 换一个节点再试一轮（节点间歇性挂的根治方案）
         time.sleep(1)
-        for use_proxy in (True, False):
-            if d:
-                break
-            try:
-                d = fetch(url, timeout=8, use_proxy=use_proxy)
-            except Exception:
-                pass
+    if not d and _clash_switch_node():
+        # 代理失败 → 换一个节点再试一次（节点间歇性挂的根治方案）
+        time.sleep(1)
+        try:
+            d = fetch(url, timeout=6)
+        except Exception:
+            pass
     out = []
     if d:
         root = ET.fromstring(d)
@@ -478,16 +471,17 @@ def bing_search(q, limit=10):
     from concurrent.futures import ThreadPoolExecutor
     engines = [("360", _sogou_page, max(8, min(limit // 2, 15))),
                ("ddg", _ddg_page, max(3, min(limit // 5, 10))),
-               ("google", _google_page, max(3, min(limit // 10, 15)))]
+               ("google", _google_page, max(3, min(limit // 10, 15))),
+               ("bing", bing_page, max(8, min(limit // 4, 20)))]  # Bing 并入并行批次（每页 30 条，限流也只丢后续页）
     out, seen = [], set()
     labels = {"bing": "Bing", "ddg": "DuckDuckGo", "360": "360", "google": "Google"}
-    ex = ThreadPoolExecutor(max_workers=3)
+    ex = ThreadPoolExecutor(max_workers=4)
     futs = [(name, per, ex.submit(fn, q, limit)) for name, fn, per in engines]
     try:
         for name, per, fut in futs:
             try:
                 got = 0
-                for title, url in fut.result(timeout=45):
+                for title, url in fut.result(timeout=25):
                     if got >= per:
                         break
                     key = _dedup_key(url)
@@ -504,51 +498,43 @@ def bing_search(q, limit=10):
                 break
     finally:
         ex.shutdown(wait=False)  # 不等待卡住的引擎线程
-    # Bing 最后串行补满（避免与其它引擎并发触发 Bing 限流只给第 1 页）
-    if len(out) < limit:
-        try:
-            for title, url in bing_page(q, limit):
-                key = _dedup_key(url)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(("[Bing] %s" % title, url))
-                if len(out) >= limit:
-                    break
-        except Exception:
-            pass
-    # 四源保底：缺哪个引擎 → 专项重抓（换入口/通道），保证四个引擎都有结果
+    # 四源保底：缺哪个引擎 → 并行专项重抓（换入口/通道），保证四个引擎都有结果（总预算 ~12s）
     have = set()
     for t, _u in out:
         for k in labels.values():
             if t.startswith("[" + k + "]"):
                 have.add(k)
-    for name, fn, lab in [("ddg", _ddg_page, "DuckDuckGo"), ("360", _sogou_page, "360"),
-                          ("google", _google_page, "Google"), ("bing", bing_page, "Bing")]:
-        if lab in have:
-            continue  # 已有该引擎；缺失的引擎必须补至少 1 条（即使总数已到 limit）
-        try:
-            for title, url in fn(q, max(5, limit - len(out))):
-                key = _dedup_key(url)
-                if key in seen:
+    missing = [("ddg", _ddg_page, "DuckDuckGo"), ("360", _sogou_page, "360"),
+               ("google", _google_page, "Google"), ("bing", bing_page, "Bing")]
+    missing = [(n, f, l) for n, f, l in missing if l not in have]
+    if missing:
+        from concurrent.futures import ThreadPoolExecutor as _TP
+        with _TP(max_workers=len(missing)) as ex2:
+            bf = [(lab, ex2.submit(fn, q, 10)) for name, fn, lab in missing]
+            for lab, f2 in bf:
+                try:
+                    for title, url in f2.result(timeout=12):  # 每个缺失引擎最多补 12s（并行，总预算约 12s）
+                        key = _dedup_key(url)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        out.append(("[" + lab + "] " + title, url))
+                        if len(out) >= limit:
+                            break
+                except Exception:
                     continue
-                seen.add(key)
-                out.append(("[" + lab + "] " + title, url))
-                if len(out) >= limit:
-                    break
-        except Exception:
-            continue
-    # Bing 结果置顶（避免被 Google 大量结果淹没，用户第一眼看到 [Bing]）
+    # Bing 结果置顶，Google 第二（Bing 中文词效果好，Google 权威性高，其余引擎殿后）
     bing_items = [(t, u) for t, u in out if t.startswith("[Bing]")]
-    others = [(t, u) for t, u in out if not t.startswith("[Bing]")]
-    out = bing_items + others
+    google_items = [(t, u) for t, u in out if t.startswith("[Google]")]
+    others = [(t, u) for t, u in out if not t.startswith("[Bing]") and not t.startswith("[Google]")]
+    out = bing_items + google_items + others
     return out if out else [("网页结果获取失败", "")]
 
 
 def bing_page(q, limit):
     from concurrent.futures import ThreadPoolExecutor
     out = []
-    pages = list(range(1, min(limit, 60) + 1, 10))  # Bing \u6bcf\u9875\u5b9e\u9645\u7ea6 10 \u6761\uff0c\u6b65\u8fdb 10 \u8fde\u7eed\u7ffb\u9875
+    pages = list(range(1, min(limit, 20) + 1, 10))  # Bing 每页实际约 30 条(count=30)，2 页=60 条，兼顾速度
 
     def _fb(url, use_proxy, cn=False):
         # Bing \u5e26 Cookie \u8bf7\u6c42\uff08\u65e0 cookie \u8fde\u7eed\u8bf7\u6c42\u6613\u89e6\u53d1\u9650\u6d41\uff09
@@ -559,9 +545,9 @@ def bing_page(q, limit):
         req = urllib.request.Request(url, headers=hdr)
         if PROXY and use_proxy:
             op = urllib.request.build_opener(urllib.request.ProxyHandler({"http": PROXY, "https": PROXY}))
-            with op.open(req, timeout=8) as r:
+            with op.open(req, timeout=6) as r:
                 return r.read().decode("utf-8", "ignore")
-        with urllib.request.urlopen(req, timeout=8) as r:
+        with urllib.request.urlopen(req, timeout=6) as r:
             return r.read().decode("utf-8", "ignore")
 
     def grab(first):
@@ -579,24 +565,18 @@ def bing_page(q, limit):
                     res.append((title[:90], link))
             return res
 
-        # \u4ee3\u7406\u4f18\u5148\uff08GUI \u5185\u7f6e\u4ee3\u7406\u7a33\u5b9a\u51fa\u7ed3\u679c\uff09
+        # 代理优先（GUI 内置代理稳定出结果）
         res = []
         try:
             res = parse(_fb(url, True))
         except Exception:
             res = []
-        if not res:  # \u9650\u6d41/\u7a7a\u7ed3\u679c \u2192 \u51b7\u5374\u540e\u91cd\u8bd5\u4e00\u6b21
-            try:
-                time.sleep(1.5)
-                res = parse(_fb(url, True))
-            except Exception:
-                res = []
-        if not res:  # cn.bing.com \u56fd\u5185\u76f4\u8fde\uff08\u4ee3\u7406\u51fa\u53e3 IP \u88ab\u9650\u6d41\u65f6\u7684\u5907\u7528\u901a\u9053\uff09
+        if not res:  # cn.bing.com 国内直连（代理出口 IP 被限流时的备用通道）
             try:
                 res = parse(_fb(url, False, cn=True))
             except Exception:
                 res = []
-        if not res:  # \u76f4\u8fde\u515c\u5e95\uff08www.bing.com\uff09
+        if not res:  # 直连兜底（www.bing.com）
             try:
                 res = parse(_fb(url, False))
             except Exception:
@@ -669,7 +649,7 @@ def npm_search(q, limit=10):
 
     ex = ThreadPoolExecutor(max_workers=3)
     try:
-        for data in ex.map(grab, range(0, min(limit, 2000), 100)):  # npm 搜索接口单次最多 2000 条（接口硬顶）
+        for data in ex.map(grab, range(0, min(limit, 500), 100)):  # npm 搜索接口 5 页=500 条（兼顾速度）
             if not data:
                 break
             objs = data.get("objects", [])
@@ -828,16 +808,33 @@ def _dedup(results):
     return out
 
 
-def search_all(q, limit, lang=None):
+def search_all(q, limit, lang=None, progress=None):
+    """多引擎并行搜索；progress 回调(label, items, done, total) 每完成一个引擎触发一次（边搜边出）"""
     key = (q, limit, lang)
     hit = _CACHE.get(key)
     if hit and time.time() - hit[0] < CACHE_TTL:
         return hit[1]
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     gh_q = (q + " language:" + lang) if lang else q
     with ThreadPoolExecutor(max_workers=4) as ex:
-        results = dict(ex.map(search_one,
-                              [(l, f, (gh_q if l == "GitHub 仓库" else q), limit) for l, f in SOURCES]))
+        futs = {ex.submit(search_one, (l, f, (gh_q if l == "GitHub 仓库" else q), limit)): l
+                for l, f in SOURCES}
+        results = {}
+        done = 0
+        total = len(futs)
+        for fut in as_completed(futs):
+            label = futs[fut]
+            try:
+                res = fut.result()
+                results[label] = res[1] if isinstance(res, tuple) and len(res) == 2 else res
+            except Exception as e:
+                results[label] = [("搜索失败: " + str(e)[:80], "")]
+            done += 1
+            if progress:
+                try:
+                    progress(label, results[label], done, total)
+                except Exception:
+                    pass
     results = _dedup(results)
     fail = any(not u for v in results.values() for _, u in v)
     # 失败结果只缓存 15 秒，正常结果缓存 CACHE_TTL
@@ -927,7 +924,13 @@ class App:
                         ok, msg = True, "内置代理已启动 (127.0.0.1:%d) ✓" % CLASH_PORT
                     except Exception as e:
                         ok, msg = False, "内置代理启动失败: " + str(e)[:60]
-                    self.root.after(0, lambda: self._auto_done(ok, msg))
+                    try:
+                        self.root.after(0, lambda: self._auto_done(ok, msg))
+                    except Exception:
+                        try:
+                            self._auto_done(ok, msg)  # mainloop 未就绪时的兜底（直接同线程执行）
+                        except Exception:
+                            pass
                 threading.Thread(target=_w, daemon=True).start()
             root.after(300, _auto)
         # 启动后后台检查更新（等内置代理就绪，再额外延时）
@@ -1037,8 +1040,13 @@ class App:
         self.content.pack(fill="both", expand=True, padx=18, pady=(6, 6))
         for label, f in self.frames.items():
             f.place(in_=self.content, x=0, y=0, relwidth=1, relheight=1)
-        self.status = ttk.Label(root, text="就绪", style="Status.TLabel", anchor="w", padding=(18, 6))
-        self.status.pack(fill="x")
+        self.status_bar = ttk.Frame(root, style="Status.TFrame")
+        self.status_bar.pack(fill="x")
+        self.status = ttk.Label(self.status_bar, text="就绪", style="Status.TLabel", anchor="w", padding=(18, 6))
+        self.status.pack(side="left", fill="x", expand=True)
+        self.progress = ttk.Progressbar(self.status_bar, mode="determinate", length=150)
+        self.progress.pack(side="right", padx=(0, 18), pady=8)
+        self.progress.pack_forget()  # 平时隐藏，搜索时显示
         self.update_builtin_btn()
 
         root.bind("<Control-f>", lambda e: (self.entry.focus_set(), self.entry.select_range(0, "end")))
@@ -1099,6 +1107,7 @@ class App:
                         borderwidth=0, arrowsize=0, width=10)
         style.map("Vertical.TScrollbar", background=[("active", t["accent"])])
         style.configure("Status.TLabel", background=t["status"], foreground=t["sub"], font=("Microsoft YaHei UI", 9))
+        style.configure("Status.TFrame", background=t["status"])
         style.configure("Spin.TLabel", background=t["card"], foreground=t["accent"],
                         font=("Microsoft YaHei UI", 11, "bold"))
         style.configure("Busy.TLabel", background=t["status"], foreground=t["accent"],
@@ -1774,7 +1783,13 @@ class App:
         save_json(HIST_FILE, self.history)
         self.entry.configure(values=self.history[:20])
         self.btn.config(state="normal", text="取 消", command=self._cancel_search)
-        self.status.config(text=f"正在搜索: {q} …", style="Busy.TLabel")
+        self.status.config(text="正在搜索: %s …" % q, style="Busy.TLabel")
+        self._q = q
+        try:
+            self.progress.config(value=0, maximum=len(SOURCES))
+            self.progress.pack(side="right", padx=(0, 18), pady=8)
+        except Exception:
+            pass
         self._cancel = False
         for label in [l for l, _ in SOURCES]:
             self.tab_btns[label].config(text=ICONS.get(label, label))
@@ -2045,19 +2060,59 @@ class App:
     def _cancel_search(self):
         self._cancel = True
         self._close_loading()
+        try:
+            self.progress.pack_forget()
+        except Exception:
+            pass
         self.btn.config(state="normal", text="搜 索", command=self.run)
         self.status.config(text="搜索已取消", style="Status.TLabel")
 
     def _work(self, q, limit=10, lang=None):
         t0 = time.time()
         try:
-            results = search_all(q, limit, lang)
+            results = search_all(q, limit, lang, progress=self._search_progress)
         except Exception as e:
             results = {"__err__": str(e)}
         self.root.after(0, lambda: self._show(q, results, time.time() - t0))
 
+    def _search_progress(self, label, items, done, total):
+        """搜索线程回调 → 主线程边搜边出"""
+        self.root.after(0, lambda: self._on_progress(label, items, done, total))
+
+    def _on_progress(self, label, items, done, total):
+        if getattr(self, "_cancel", False):
+            return
+        self.data[label] = list(items)
+        self.total[label] = len(items)
+        self.page[label] = 0
+        self.tab_btns[label].config(text="%s(%d)" % (ICONS.get(label, label), len(items)))
+        if self.current == label:
+            self._render_page(label)
+        try:
+            self.progress.config(value=done, maximum=total)
+        except Exception:
+            pass
+        try:
+            names = {"GitHub 仓库": "GitHub", "网页结果": "网页", "Stack Overflow": "SO", "npm 包": "npm"}
+            done_parts = ["%s %d条" % (names.get(l, l), len(self.data.get(l, []))) for l, _ in SOURCES]
+            done_parts = [p for p in done_parts if not p.endswith("0条")]
+            rest = total - done
+            if rest:
+                tip = " · 还有 %d 个引擎进行中…" % rest
+            else:
+                tip = " · 收尾中…"
+            self.status.config(text="正在搜索: %s … %d/%d · %s%s"
+                               % (self._q, done, total, "、".join(done_parts) or "启动中", tip),
+                               style="Busy.TLabel")
+        except Exception:
+            pass
+
     def _show(self, q, results, elapsed=0):
         self._close_loading()
+        try:
+            self.progress.pack_forget()
+        except Exception:
+            pass
         self.btn.config(state="normal", text="搜 索", command=self.run)
         if getattr(self, "_cancel", False):
             self.status.config(text="搜索已取消", style="Status.TLabel")

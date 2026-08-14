@@ -1,3 +1,3 @@
-1.0.62
-https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.62.exe
-启动自动预热: 打开软件后台即测Google通道, 节点不通自动切换, 状态栏显示✓已就绪
+1.0.63
+https://github.com/yide490-ship-it/source-/raw/main/%E5%9C%86%E5%9C%86%E6%90%9C%E7%B4%A2-Setup-1.0.63.exe
+搜索进度实时显示(状态栏x/4+进度条+边搜边出); 提速5倍(102s->18s): Bing并行/DDG去直连/Google收紧/保底并行; 排序Bing置顶Google第二
